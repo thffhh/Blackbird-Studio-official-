@@ -1,3 +1,4 @@
+
 name: Extract BlackBird Studio
 
 on:
@@ -11,19 +12,45 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Extract project
+      - name: Extract project ZIP
         run: |
-          mkdir -p /tmp/project
-          unzip -q project.zip -d /tmp/project
-          cp -a /tmp/project/Blackbird-studio-main/. .
-          rm project.zip
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
 
-      - name: Save extracted files
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in repository root."
+            exit 1
+          fi
+
+          echo "Found ZIP: $ZIP_FILE"
+
+          mkdir -p /tmp/project
+          unzip -q "$ZIP_FILE" -d /tmp/project
+
+          PROJECT_DIR=$(find /tmp/project -type f -name package.json -printf '%h\n' | head -n 1)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: package.json not found inside ZIP."
+            exit 1
+          fi
+
+          echo "Project folder: $PROJECT_DIR"
+
+          cp -a "$PROJECT_DIR/." .
+          rm -f "$ZIP_FILE"
+
+      - name: Commit extracted project
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A
-          git commit -m "Extract BlackBird Studio project"
-          git push
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Extract BlackBird Studio project"
+            git push
+          else
+            echo "No changes to commit."
+          fi
