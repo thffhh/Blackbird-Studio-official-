@@ -1,13 +1,14 @@
+
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://YOUR-RENDER-SERVICE.onrender.com/api/$1"
+      "destination": "https://blackbird-studio-official.onrender.com/api/$1"
     },
     {
       "source": "/uploads/(.*)",
-      "destination": "https://YOUR-RENDER-SERVICE.onrender.com/uploads/$1"
+      "destination": "https://blackbird-studio-official.onrender.com/uploads/$1"
     },
     {
       "source": "/(.*)",
