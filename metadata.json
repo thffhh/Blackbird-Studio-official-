@@ -1,0 +1,6 @@
+{
+  "name": "BlackBird Studio - Bangla Anime Dubbing",
+  "description": "Official online platform for BlackBird Studio, a premier Bangla anime dubbing team. Discover voice artists, completed dubbing projects, join the team, and explore anime dubs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
