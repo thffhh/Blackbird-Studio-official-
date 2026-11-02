@@ -489,14 +489,29 @@ export async function createServer() {
   // Static files for uploads
   app.use('/uploads', express.static(UPLOADS_DIR));
 
-  // Initialize DB. Set ADMIN_EMAIL and ADMIN_PASSWORD (12+ chars) before first production start.
-  const initialDatabase = readDatabase();
-  if (generatedInitialPassword) {
-    console.warn(`[SECURITY] Initial admin email: ${initialDatabase.adminUser.email}`);
-    console.warn(`[SECURITY] One-time initial admin password: ${generatedInitialPassword}`);
-    console.warn('[SECURITY] Save this password now, then change it in Admin Account Settings.');
+ // Initialize DB. Set ADMIN_EMAIL and ADMIN_PASSWORD (12+ chars) before first production start.
+const initialDatabase = readDatabase();
+
+// One-time admin credentials reset
+if (process.env.ADMIN_RESET === 'true') {
+  if (configuredAdminPassword.length < 12) {
+    throw new Error('ADMIN_PASSWORD must be at least 12 characters.');
   }
 
+  initialDatabase.adminUser.email = ADMIN_EMAIL;
+  initialDatabase.adminUser.passwordHash =
+    bcrypt.hashSync(configuredAdminPassword, 12);
+
+  saveDatabase(initialDatabase);
+
+  console.log('[SECURITY] Admin credentials reset successfully.');
+}
+
+if (generatedInitialPassword) {
+  console.warn(`[SECURITY] Initial admin email: ${initialDatabase.adminUser.email}`);
+  console.warn(`[SECURITY] One-time initial admin password: ${generatedInitialPassword}`);
+  console.warn('[SECURITY] Save this password now, then change it in Admin Account Settings.');
+}
   // Authentication Middleware for /api/admin/*
   function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
     const authHeader = req.headers.authorization;
