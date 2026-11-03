@@ -284,6 +284,80 @@ async function initializeDatabase(): Promise<void> {
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
+/* =========================================
+   MEMBER AUTHENTICATION CONFIGURATION
+========================================= */
+
+const MEMBER_SESSION_TTL_MS =
+  30 * 24 * 60 * 60 * 1000;
+
+const MEMBER_COOKIE_NAME = 'bbs_member_session';
+
+function hashMemberToken(token: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(token)
+    .digest('hex');
+}
+
+function normalizeMemberEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function isValidMemberEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function getMemberCookie(req: Request): string | null {
+  const cookieHeader = req.headers.cookie || '';
+
+  const cookies = cookieHeader.split(';');
+
+  for (const cookie of cookies) {
+    const separator = cookie.indexOf('=');
+
+    if (separator < 0) continue;
+
+    const name = cookie.slice(0, separator).trim();
+
+    if (name !== MEMBER_COOKIE_NAME) continue;
+
+    return decodeURIComponent(
+      cookie.slice(separator + 1).trim()
+    );
+  }
+
+  return null;
+}
+
+function setMemberCookie(
+  res: Response,
+  token: string
+): void {
+  const secure =
+    process.env.NODE_ENV === 'production'
+      ? '; Secure'
+      : '';
+
+  res.setHeader(
+    'Set-Cookie',
+    `${MEMBER_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(MEMBER_SESSION_TTL_MS / 1000)}${secure}`
+  );
+}
+
+function clearMemberCookie(res: Response): void {
+  const secure =
+    process.env.NODE_ENV === 'production'
+      ? '; Secure'
+      : '';
+
+  res.setHeader(
+    'Set-Cookie',
+    `${MEMBER_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`
+  );
+}
+
+
 const activeSessions = new Map<string, number>();
 
 const rateBuckets = new Map<
