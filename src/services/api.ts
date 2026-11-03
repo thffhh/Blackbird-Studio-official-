@@ -77,7 +77,39 @@ export async function fetchPublicData(): Promise<PublicData> {
   if (!res.ok) throw new Error('Failed to load studio data');
   return res.json();
 }
+export async function submitApplication(data: any) {
+  const res = await fetch('/api/applications', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
 
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to submit application');
+  return json;
+}
+
+export async function trackApplication(id: string) {
+  const res = await fetch(`/api/applications/track/${encodeURIComponent(id)}`);
+  const json = await res.json();
+
+  if (!res.ok) throw new Error(json.error || 'Application not found');
+  return json;
+}
+
+export async function uploadMedia(file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    body: formData
+  });
+
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to upload media');
+  return json as { success: boolean; url: string };
+}
 export async function submitApplication(data: any) {
   const res = await fetch('/api/applications', {
     method: 'POST',
