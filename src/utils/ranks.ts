@@ -1,15 +1,24 @@
+
 import { OFFICIAL_RANKS, Rank } from '../types/index.ts';
 
 /**
- * Validates if a string is one of the exactly 9 official BlackBird Studio ranks:
- * D, C, B, A, S, Immortal, Moderator, Admin, Owner
+ * Validates whether a rank belongs to the
+ * official BlackBird Studio rank system.
+ *
+ * Official ranks:
+ * D, C, B, A, S, Immortal, Moderator,
+ * Admin, Co-Founder, Owner
  */
 export function isValidRank(rank: string): rank is Rank {
   return (OFFICIAL_RANKS as readonly string[]).includes(rank);
 }
 
+/* =========================================
+   RANK WEIGHTS
+========================================= */
+
 /**
- * Rank weight for comparison or badge coloring
+ * Higher number = higher rank.
  */
 export const RANK_WEIGHTS: Record<Rank, number> = {
   D: 1,
@@ -20,12 +29,14 @@ export const RANK_WEIGHTS: Record<Rank, number> = {
   Immortal: 6,
   Moderator: 7,
   Admin: 8,
-  Owner: 9
+  'Co-Founder': 9,
+  Owner: 10
 };
 
-/**
- * Returns distinct premium styling configuration for badges
- */
+/* =========================================
+   RANK BADGE STYLES
+========================================= */
+
 export function getRankBadgeStyle(rank: Rank): {
   label: string;
   bg: string;
@@ -44,6 +55,17 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: 'shadow-[0_0_15px_rgba(234,179,8,0.35)]',
         description: 'Studio Founder & Executive Director'
       };
+
+    case 'Co-Founder':
+      return {
+        label: 'Co-Founder',
+        bg: 'bg-gradient-to-r from-orange-950/60 via-amber-950/50 to-yellow-950/40',
+        text: 'text-orange-300 font-bold',
+        border: 'border-orange-400/60',
+        glow: 'shadow-[0_0_14px_rgba(251,146,60,0.3)]',
+        description: 'Studio Co-Founder & Executive Leadership'
+      };
+
     case 'Admin':
       return {
         label: 'Admin',
@@ -53,6 +75,7 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: 'shadow-[0_0_12px_rgba(244,63,94,0.25)]',
         description: 'Lead Management & Production Overseer'
       };
+
     case 'Moderator':
       return {
         label: 'Moderator',
@@ -62,6 +85,7 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: 'shadow-[0_0_12px_rgba(168,85,247,0.25)]',
         description: 'Community & Quality Coordinator'
       };
+
     case 'Immortal':
       return {
         label: 'Immortal',
@@ -71,6 +95,7 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: 'shadow-[0_0_14px_rgba(34,211,238,0.3)]',
         description: 'Legendary Veteran Voice Artist'
       };
+
     case 'S':
       return {
         label: 'Rank S',
@@ -80,6 +105,7 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: 'shadow-[0_0_10px_rgba(251,191,36,0.25)]',
         description: 'Elite Master Voice Artist'
       };
+
     case 'A':
       return {
         label: 'Rank A',
@@ -89,6 +115,7 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: 'shadow-[0_0_8px_rgba(16,185,129,0.2)]',
         description: 'Senior Voice Artist'
       };
+
     case 'B':
       return {
         label: 'Rank B',
@@ -98,6 +125,7 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: 'shadow-[0_0_8px_rgba(59,130,246,0.2)]',
         description: 'Established Voice Artist'
       };
+
     case 'C':
       return {
         label: 'Rank C',
@@ -107,6 +135,7 @@ export function getRankBadgeStyle(rank: Rank): {
         glow: '',
         description: 'Junior Voice Artist'
       };
+
     case 'D':
     default:
       return {
