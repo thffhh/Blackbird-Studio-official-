@@ -677,11 +677,13 @@ export async function createServer() {
      SUPABASE STORAGE UPLOAD
   ========================================= */
 
-  app.post(
-    '/api/upload',
-    rateLimit('upload', 15, 60 * 60 * 1000),
-    upload.single('file'),
-    async (req, res) => {
+  
+app.post(
+  '/api/upload',
+  rateLimit('upload', 15, 60 * 60 * 1000),
+  upload.single('file'),
+  async (req, res) => {
+    try {
       if (!req.file) {
         return res.status(400).json({
           error: 'No file uploaded.'
@@ -692,12 +694,9 @@ export async function createServer() {
         .extname(req.file.originalname)
         .toLowerCase();
 
-      if (
-        !hasValidMediaSignature(req.file.buffer, ext)
-      ) {
+      if (!hasValidMediaSignature(req.file.buffer, ext)) {
         return res.status(400).json({
-          error:
-            'The uploaded file content does not match an allowed image or video format.'
+          error: 'Invalid image or video file format.'
         });
       }
 
@@ -712,39 +711,54 @@ export async function createServer() {
       const storagePath =
         `${new Date().toISOString().slice(0, 10)}/${filename}`;
 
-      const { error } = await supabase.storage
-        .from(BUCKET)
-        .upload(storagePath, req.file.buffer, {
-          contentType: req.file.mimetype,
-          upsert: false,
-          cacheControl: '31536000'
+      const { data: uploadData, error: uploadError } =
+        await supabase.storage
+          .from(BUCKET)
+          .upload(storagePath, req.file.buffer, {
+            contentType: req.file.mimetype,
+            upsert: false,
+            cacheControl: '31536000'
+          });
+
+      if (uploadError) {
+        console.error('[BlackBird] Supabase upload error:', {
+          message: uploadError.message,
+          name: uploadError.name
         });
 
-      if (error) {
-        console.error(
-          '[BlackBird] Supabase upload failed:',
-          error.message
-        );
-
         return res.status(502).json({
-          error:
-            'Storage upload failed. Check Supabase bucket and secret key.'
+          error: 'Supabase upload failed.',
+          details: uploadError.message
         });
       }
 
-      const { data } = supabase.storage
+      const { data: publicData } = supabase.storage
         .from(BUCKET)
-        .getPublicUrl(storagePath);
+        .getPublicUrl(uploadData.path);
 
-      res.json({
+      if (!publicData?.publicUrl) {
+        return res.status(502).json({
+          error: 'Upload completed, but public URL could not be generated.'
+        });
+      }
+
+      return res.json({
         success: true,
-        url: data.publicUrl,
+        url: publicData.publicUrl,
         filename,
         size: req.file.size,
         mimetype: req.file.mimetype
       });
+
+    } catch (error) {
+      console.error('[BlackBird] Upload route exception:', error);
+
+      return res.status(500).json({
+        error: 'Unexpected upload error.'
+      });
     }
-  );
+  }
+);
 
   /* =========================================
      ADMIN LOGIN
