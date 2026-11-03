@@ -1,3 +1,4 @@
+
 import type {
   Member,
   Application,
@@ -10,7 +11,8 @@ import type {
   MemberRegistrationData,
   MemberLoginData,
   MemberProfileUpdate,
-  MemberAccountProfile
+  MemberAccountProfile,
+  Rank
 } from '../types/index.ts';
 
 const TOKEN_KEY = 'bbs_admin_token';
@@ -65,47 +67,51 @@ export interface AdminAllData extends PublicData {
 }
 
 /* =========================================
+   GENERAL API REQUEST
+========================================= */
+
+async function apiRequest<T>(
+  url: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...options.headers
+    }
+  });
+
+  const json = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(
+      json.error || json.message || 'Request failed'
+    );
+  }
+
+  return json as T;
+}
+
+/* =========================================
    GENERAL API
 ========================================= */
 
 export async function fetchPublicData(): Promise<PublicData> {
-  const res = await fetch('/api/public-data');
-
-  if (!res.ok) {
-    throw new Error('Failed to load studio data');
-  }
-
-  return res.json();
+  return apiRequest<PublicData>('/api/public-data');
 }
 
 export async function submitApplication(data: any) {
-  const res = await fetch('/api/applications', {
+  return apiRequest('/api/applications', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to submit application');
-  }
-
-  return json;
 }
 
 export async function trackApplication(id: string) {
-  const res = await fetch(
+  return apiRequest(
     `/api/applications/track/${encodeURIComponent(id)}`
   );
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Application not found');
-  }
-
-  return json;
 }
 
 export async function uploadMedia(file: File) {
@@ -117,7 +123,7 @@ export async function uploadMedia(file: File) {
     body: formData
   });
 
-  const json = await res.json();
+  const json = await res.json().catch(() => ({}));
 
   if (!res.ok) {
     throw new Error(json.error || 'Failed to upload media');
@@ -137,17 +143,13 @@ export async function adminLogin(
   email: string,
   password: string
 ) {
-  const res = await fetch('/api/auth/login', {
+  const json = await apiRequest<{
+    token?: string;
+    [key: string]: unknown;
+  }>('/api/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password })
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Login failed');
-  }
 
   if (json.token) {
     authStorage.setToken(json.token);
@@ -157,15 +159,16 @@ export async function adminLogin(
 }
 
 export async function adminCheckSession() {
-  const res = await fetch('/api/auth/session', {
-    headers: getAuthHeaders()
-  });
-
-  if (!res.ok) {
+  try {
+    return await apiRequest<{ authenticated: boolean }>(
+      '/api/auth/session',
+      {
+        headers: getAuthHeaders()
+      }
+    );
+  } catch {
     return { authenticated: false };
   }
-
-  return res.json();
 }
 
 export async function adminLogout() {
@@ -183,7 +186,7 @@ export async function adminChangePassword(
   currentPassword: string,
   newPassword: string
 ) {
-  const res = await fetch('/api/auth/change-password', {
+  return apiRequest('/api/auth/change-password', {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({
@@ -191,14 +194,6 @@ export async function adminChangePassword(
       newPassword
     })
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to change password');
-  }
-
-  return json;
 }
 
 /* =========================================
@@ -206,242 +201,168 @@ export async function adminChangePassword(
 ========================================= */
 
 export async function fetchAdminData(): Promise<AdminAllData> {
-  const res = await fetch('/api/admin/all-data', {
-    headers: getAuthHeaders()
-  });
-
-  if (!res.ok) {
-    throw new Error('Failed to load admin data');
-  }
-
-  return res.json();
+  return apiRequest<AdminAllData>(
+    '/api/admin/all-data',
+    {
+      headers: getAuthHeaders()
+    }
+  );
 }
+
+/* =========================================
+   ADMIN MEMBER ROSTER APIs
+========================================= */
 
 export async function adminSaveMember(
   member: Partial<Member>
 ) {
   const url = member.id
-    ? `/api/admin/members/${member.id}`
+    ? `/api/admin/members/${encodeURIComponent(member.id)}`
     : '/api/admin/members';
 
-  const res = await fetch(url, {
+  return apiRequest(url, {
     method: member.id ? 'PUT' : 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(member)
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to save member');
-  }
-
-  return json;
 }
 
 export async function adminDeleteMember(id: string) {
-  const res = await fetch(`/api/admin/members/${id}`, {
-    method: 'DELETE',
-    headers: getAuthHeaders()
-  });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to delete member');
-  }
-
-  return json;
+  return apiRequest(
+    `/api/admin/members/${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+      headers: getAuthHeaders()
+    }
+  );
 }
 
 export async function adminReorderMembers(
   orderedIds: string[]
 ) {
-  const res = await fetch('/api/admin/members/reorder', {
+  return apiRequest('/api/admin/members/reorder', {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify({ orderedIds })
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to reorder members');
-  }
-
-  return json;
 }
+
+/* =========================================
+   ADMIN APPLICATION APIs
+========================================= */
 
 export async function adminUpdateApplication(
   id: string,
   updates: Partial<Application>
 ) {
-  const res = await fetch(`/api/admin/applications/${id}`, {
-    method: 'PUT',
-    headers: getAuthHeaders(),
-    body: JSON.stringify(updates)
-  });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to update application');
-  }
-
-  return json;
+  return apiRequest(
+    `/api/admin/applications/${encodeURIComponent(id)}`,
+    {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(updates)
+    }
+  );
 }
 
 export async function adminApproveApplication(
   id: string,
   adminNotes?: string
 ) {
-  const res = await fetch(
-    `/api/admin/applications/${id}/approve`,
+  return apiRequest(
+    `/api/admin/applications/${encodeURIComponent(id)}/approve`,
     {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ adminNotes })
     }
   );
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to approve application');
-  }
-
-  return json;
 }
 
 export async function adminRejectApplication(
   id: string,
   adminNotes?: string
 ) {
-  const res = await fetch(
-    `/api/admin/applications/${id}/reject`,
+  return apiRequest(
+    `/api/admin/applications/${encodeURIComponent(id)}/reject`,
     {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ adminNotes })
     }
   );
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to reject application');
-  }
-
-  return json;
 }
+
+/* =========================================
+   ADMIN PROJECT APIs
+========================================= */
 
 export async function adminSaveProject(
   project: Partial<Project>
 ) {
   const url = project.id
-    ? `/api/admin/projects/${project.id}`
+    ? `/api/admin/projects/${encodeURIComponent(project.id)}`
     : '/api/admin/projects';
 
-  const res = await fetch(url, {
+  return apiRequest(url, {
     method: project.id ? 'PUT' : 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(project)
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to save project');
-  }
-
-  return json;
 }
 
 export async function adminDeleteProject(id: string) {
-  const res = await fetch(`/api/admin/projects/${id}`, {
-    method: 'DELETE',
-    headers: getAuthHeaders()
-  });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to delete project');
-  }
-
-  return json;
+  return apiRequest(
+    `/api/admin/projects/${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+      headers: getAuthHeaders()
+    }
+  );
 }
 
 export async function adminReorderProjects(
   orderedIds: string[]
 ) {
-  const res = await fetch('/api/admin/projects/reorder', {
+  return apiRequest('/api/admin/projects/reorder', {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify({ orderedIds })
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to reorder projects');
-  }
-
-  return json;
 }
+
+/* =========================================
+   ADMIN SETTINGS APIs
+========================================= */
 
 export async function adminUpdateSettings(
   settings: Partial<StudioSettings>
 ) {
-  const res = await fetch('/api/admin/settings', {
+  return apiRequest('/api/admin/settings', {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(settings)
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to update settings');
-  }
-
-  return json;
 }
 
 export async function adminUpdateCustomization(
   customization: Partial<WebsiteCustomization>
 ) {
-  const res = await fetch('/api/admin/customization', {
+  return apiRequest('/api/admin/customization', {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(customization)
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to update customization');
-  }
-
-  return json;
 }
 
 export async function adminUpdateSocialLinks(
   socialLinks: SocialLink[]
 ) {
-  const res = await fetch('/api/admin/social-links', {
+  return apiRequest('/api/admin/social-links', {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify({ socialLinks })
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to update social links');
-  }
-
-  return json;
 }
 
 export async function adminUpdateSupabaseConfig(config: {
@@ -449,39 +370,26 @@ export async function adminUpdateSupabaseConfig(config: {
   supabaseAnonKey: string;
   isEnabled: boolean;
 }) {
-  const res = await fetch('/api/admin/supabase-config', {
+  return apiRequest('/api/admin/supabase-config', {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(config)
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to update Supabase config');
-  }
-
-  return json;
 }
 
+/**
+ * Kept for compatibility with the existing Admin API.
+ * Do not call this during normal account management.
+ */
 export async function adminResetDefaults() {
-  const res = await fetch('/api/admin/reset-defaults', {
+  return apiRequest('/api/admin/reset-defaults', {
     method: 'POST',
     headers: getAuthHeaders()
   });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || 'Failed to reset defaults');
-  }
-
-  return json;
 }
 
 /* =========================================
-   MEMBER ACCOUNT APIs
-   Separate from public member roster
+   MEMBER ACCOUNT API REQUEST
 ========================================= */
 
 async function memberApiRequest<T>(
@@ -509,6 +417,10 @@ async function memberApiRequest<T>(
 
   return json as T;
 }
+
+/* =========================================
+   MEMBER ACCOUNT RESPONSE TYPES
+========================================= */
 
 export interface MemberSessionUser {
   id: string;
@@ -547,6 +459,10 @@ export interface MemberProfileUpdateResponse {
   profile: MemberAccountProfile;
 }
 
+/* =========================================
+   MEMBER REGISTRATION
+========================================= */
+
 export async function memberRegister(
   data: MemberRegistrationData
 ) {
@@ -558,6 +474,10 @@ export async function memberRegister(
     }
   );
 }
+
+/* =========================================
+   MEMBER LOGIN
+========================================= */
 
 export async function memberLogin(
   data: MemberLoginData
@@ -571,12 +491,30 @@ export async function memberLogin(
   );
 }
 
+/* =========================================
+   MEMBER SESSION
+========================================= */
+
 export async function fetchMemberSession() {
   return memberApiRequest<MemberSessionResponse>(
     '/api/members/me'
   );
 }
 
+/* =========================================
+   MEMBER PROFILE UPDATE
+========================================= */
+
+/**
+ * Members may update:
+ * - Full name
+ * - Profile picture
+ * - About / Bio
+ * - Hobbies
+ * - Facebook profile link
+ *
+ * Rank is intentionally excluded.
+ */
 export async function updateMemberProfile(
   updates: MemberProfileUpdate
 ) {
@@ -589,6 +527,10 @@ export async function updateMemberProfile(
   );
 }
 
+/* =========================================
+   MEMBER LOGOUT
+========================================= */
+
 export async function memberLogout() {
   return memberApiRequest<{
     success: boolean;
@@ -599,7 +541,23 @@ export async function memberLogout() {
 }
 
 /* =========================================
-   ADMIN: MEMBER ACCOUNT MANAGEMENT
+   ADMIN MEMBER ACCOUNT TYPES
+========================================= */
+
+export interface AdminMemberAccountUpdate {
+  fullName?: string;
+  avatarUrl?: string;
+  bio?: string;
+  hobbies?: string;
+  facebookLink?: string;
+}
+
+export interface AdminMemberRankUpdate {
+  rank: Rank;
+}
+
+/* =========================================
+   ADMIN MEMBER ACCOUNT MANAGEMENT
 ========================================= */
 
 export async function fetchMemberAccounts() {
@@ -610,6 +568,10 @@ export async function fetchMemberAccounts() {
     headers: getAuthHeaders()
   });
 }
+
+/* =========================================
+   ADMIN APPROVE / REJECT / SUSPEND
+========================================= */
 
 export async function adminUpdateMemberAccountStatus(
   id: string,
@@ -629,6 +591,54 @@ export async function adminUpdateMemberAccountStatus(
     }
   );
 }
+
+/* =========================================
+   ADMIN EDIT MEMBER PROFILE
+========================================= */
+
+export async function adminUpdateMemberAccountProfile(
+  id: string,
+  updates: AdminMemberAccountUpdate
+) {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+    account: MemberAccount;
+  }>(
+    `/api/admin/member-accounts/${encodeURIComponent(id)}/profile`,
+    {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(updates)
+    }
+  );
+}
+
+/* =========================================
+   ADMIN CHANGE MEMBER RANK
+========================================= */
+
+export async function adminUpdateMemberAccountRank(
+  id: string,
+  rank: Rank
+) {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+    account: MemberAccount;
+  }>(
+    `/api/admin/member-accounts/${encodeURIComponent(id)}/rank`,
+    {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ rank })
+    }
+  );
+}
+
+/* =========================================
+   ADMIN DELETE MEMBER ACCOUNT
+========================================= */
 
 export async function adminDeleteMemberAccount(id: string) {
   return memberApiRequest<{
