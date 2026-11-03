@@ -1,3 +1,4 @@
+
 /**
  * Types for BlackBird Studio
  */
@@ -23,16 +24,16 @@ export interface Member {
   avatarUrl: string;
   hobbies: string;
   bio: string;
-  joiningDate: string; // YYYY-MM-DD
+  joiningDate: string;
   isActive: boolean;
   displayOrder: number;
-  sourceApplicationId?: string; // Internal idempotency link for approved applications
+  sourceApplicationId?: string;
 }
 
 export type ApplicationStatus = 'pending' | 'approved' | 'rejected';
 
 export interface Application {
-  id: string; // e.g. BBS-APP-12345
+  id: string;
   fullName: string;
   avatarUrl: string;
   desiredRank: Rank;
@@ -40,11 +41,11 @@ export interface Application {
   bio: string;
   motivation: string;
   dubbingExperience?: string;
-  contactInfo: string; // Facebook profile link or email
+  contactInfo: string;
   additionalInfo?: string;
   isConfirmed: boolean;
   status: ApplicationStatus;
-  submittedAt: string; // ISO string
+  submittedAt: string;
   adminNotes?: string;
 }
 
@@ -64,14 +65,14 @@ export interface Project {
   displayOrder: number;
 }
 
-export type SocialPlatform = 
-  | 'facebook_page' 
-  | 'facebook_group' 
-  | 'facebook_profile' 
-  | 'youtube' 
-  | 'instagram' 
-  | 'tiktok' 
-  | 'discord' 
+export type SocialPlatform =
+  | 'facebook_page'
+  | 'facebook_group'
+  | 'facebook_profile'
+  | 'youtube'
+  | 'instagram'
+  | 'tiktok'
+  | 'discord'
   | 'custom';
 
 export interface SocialLink {
@@ -96,8 +97,8 @@ export interface StudioSettings {
 }
 
 export interface WebsiteCustomization {
-  accentColor: string; // default #d4af37 (Gold)
-  bgColor: string;     // default #08080a
+  accentColor: string;
+  bgColor: string;
   cardStyle: 'glass' | 'solid' | 'bordered';
   animationsEnabled: boolean;
   animationIntensity: 'subtle' | 'normal' | 'cinematic';
@@ -105,7 +106,7 @@ export interface WebsiteCustomization {
   pageTransitions: boolean;
   desktopBgImage: string;
   mobileBgImage: string;
-  bgOverlayOpacity: number; // 0 to 1
+  bgOverlayOpacity: number;
   heroHeading: string;
   heroDescription: string;
   visibleSections: {
@@ -124,4 +125,63 @@ export interface AdminUser {
   email: string;
   role: 'super_admin' | 'admin';
   lastLogin?: string;
+}
+
+/* =========================================
+   MEMBER ACCOUNT SYSTEM
+========================================= */
+
+export type MemberAccountStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'suspended';
+
+export interface MemberAccountProfile {
+  avatarUrl: string;
+  bio: string;
+  hobbies: string;
+  voiceSpecialties: string;
+  experience: string;
+  portfolio: string;
+}
+
+export interface MemberAccount {
+  id: string;
+  full_name: string;
+  email: string;
+  status: MemberAccountStatus;
+  profile: MemberAccountProfile;
+  rejection_reason: string;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+}
+
+export interface MemberRegistrationData {
+  fullName: string;
+  email: string;
+  password: string;
+}
+
+export interface MemberLoginData {
+  email: string;
+  password: string;
+}
+
+export interface MemberAuthResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  status?: MemberAccountStatus;
+  account?: MemberAccount;
+}
+
+export interface MemberProfileUpdate {
+  avatarUrl?: string;
+  bio?: string;
+  hobbies?: string;
+  voiceSpecialties?: string;
+  experience?: string;
+  portfolio?: string;
 }
