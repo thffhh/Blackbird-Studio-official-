@@ -1,7 +1,4 @@
-  }
-  );
-}
-import type {
+  import type {
   Member,
   Application,
   Project,
