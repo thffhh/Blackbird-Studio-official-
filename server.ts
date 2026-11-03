@@ -236,74 +236,7 @@ async function flushWrites(): Promise<void> {
    DATABASE INITIALIZATION
 ========================================= */
 
-async function initializeDatabase(): Promise<void> {
-  await sql`
-    CREATE TABLE IF NOT EXISTS blackbird_studio_data (
-      id TEXT PRIMARY KEY,
-      payload JSONB NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `;
-
-  const rows = await sql`
-    SELECT payload
-    FROM blackbird_studio_data
-    WHERE id = 'main'
-    LIMIT 1
-  `;
-
-  if (rows.length > 0) {
-    const parsed =
-      typeof rows[0].payload === 'string'
-        ? JSON.parse(rows[0].payload)
-        : rows[0].payload;
-
-    if (!validateDatabase(parsed)) {
-      throw new Error(
-        'Neon database record is invalid. No data was changed.'
-      );
-    }
-
-    database = parsed;
-
-    console.log(
-      '[BlackBird] Existing Neon database loaded.'
-    );
-
-    return;
-  }
-
-  /*
-   * Import old database.json only when explicitly enabled.
-   * This does not overwrite an existing Neon database.
-   */
-
-  if (
-    process.env.ALLOW_LOCAL_JSON_MIGRATION === 'true' &&
-    fs.existsSync(DB_FILE)
-  ) {
-    const parsed = JSON.parse(
-      fs.readFileSync(DB_FILE, 'utf8')
-    );
-
-    if (!validateDatabase(parsed)) {
-      throw new Error(
-        'Local database.json is invalid. Migration stopped.'
-      );
-    }
-
-    database = parsed;
-
-    saveDatabase(parsed);
-
-    await flushWrites();
-
-    console.log(
-      '[BlackBird] Local database.json imported into Neon.'
-    );
-
-    return;
-  }
+initializeDatabase
 
   /*
    * Explicit initial database creation.
