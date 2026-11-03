@@ -559,6 +559,15 @@ export interface AdminMemberRankUpdate {
    ADMIN MEMBER ACCOUNT MANAGEMENT
 ========================================= */
 
+export async function fetchMemberAccounts() {
+  return memberApiRequest<{
+    success: boolean;
+    accounts: MemberAccount[];
+  }>('/api/admin/member-accounts', {
+    headers: getAuthHeaders()
+  });
+}
+
 export async function adminLinkMemberAccountToRoster(
   accountId: string,
   memberId: string
