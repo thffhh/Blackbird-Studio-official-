@@ -237,53 +237,38 @@ async function flushWrites(): Promise<void> {
 ========================================= */
 
 async function initializeDatabase(): Promise<void> {
+  console.log('[BlackBird] Loading database from Neon...');
 
-  /*
-   * Explicit initial database creation.
-   */
+  const rows = await sql`
+    SELECT payload
+    FROM blackbird_studio_data
+    WHERE id = 'main'
+    LIMIT 1
+  `;
 
-  if (process.env.ALLOW_INITIAL_SEED === 'true') {
-    const password = process.env.ADMIN_PASSWORD || '';
+  if (rows.length > 0) {
+    const payload = rows[0].payload;
 
-    if (password.length < 12) {
+    const parsed =
+      typeof payload === 'string'
+        ? JSON.parse(payload)
+        : payload;
+
+    if (!validateDatabase(parsed)) {
       throw new Error(
-        'ADMIN_PASSWORD must be at least 12 characters.'
+        '[BlackBird] Existing Neon database has an invalid structure. Data was not overwritten.'
       );
     }
 
-    database = {
-      adminUser: {
-        email: (
-          process.env.ADMIN_EMAIL ||
-          'admin@blackbirdstudio.com'
-        ).trim().toLowerCase(),
+    database = parsed as DatabaseSchema;
 
-        passwordHash: bcrypt.hashSync(password, 12),
-        role: 'super_admin'
-      },
-
-      members: DEFAULT_MEMBERS,
-      applications: DEFAULT_APPLICATIONS,
-      projects: DEFAULT_PROJECTS,
-      socialLinks: DEFAULT_SOCIAL_LINKS,
-      settings: DEFAULT_SETTINGS,
-      customization: DEFAULT_CUSTOMIZATION
-    };
-
-    saveDatabase(database);
-
-    await flushWrites();
-
-    console.log(
-      '[BlackBird] Initial database created.'
-    );
-
+    console.log('[BlackBird] Existing database loaded successfully.');
     return;
   }
 
   throw new Error(
-  'Neon has no BlackBird data yet. Import the old database.json first, or explicitly enable ALLOW_INITIAL_SEED=true for a genuinely new installation. Existing data was not overwritten.'
-);
+    '[BlackBird] No existing database found in Neon. Existing data was not overwritten.'
+  );
 }
 
 /* =========================================
