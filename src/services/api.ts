@@ -1,11 +1,42 @@
 import type {
+  Member,
+  Application,
+  Project,
+  SocialLink,
+  StudioSettings,
+  WebsiteCustomization,
   MemberAccount,
   MemberAccountStatus,
   MemberRegistrationData,
   MemberLoginData,
-  MemberProfileUpdate,
-  MemberAccountProfile
-} from '../types';
+  MemberProfileUpdate
+} from '../types/index.ts';
+/* =========================================
+   MEMBER ACCOUNT APIs
+   Separate from public member roster
+========================================= */
+
+async function memberApiRequest<T>(
+  url: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const res = await fetch(url, {
+    ...options,
+    credentials: 'same-origin',
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...options.headers
+    }
+  });
+
+  const json = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(json.error || json.message || 'Member request failed');
+  }
+
+  return json as T;
+}
 
 export interface MemberSessionUser {
   id: string;
@@ -44,101 +75,92 @@ export interface MemberProfileUpdateResponse {
   profile: MemberAccountProfile;
 }
 
-async function memberApiRequest<T>(
-  url: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const res = await fetch(url, {
-    ...options,
-    credentials: 'same-origin',
-    headers: {
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers
-    }
-  });
-
-  const json = await res.json().catch(() => ({}));
-
-  if (!res.ok) {
-    throw new Error(
-      json.error || json.message || 'Member request failed'
-    );
-  }
-
-  return json as T;
-}
-
-export function memberRegister(
-  data: MemberRegistrationData
-): Promise<MemberRegisterResponse> {
-  return memberApiRequest('/api/members/register', {
-    method: 'POST',
-    body: JSON.stringify(data)
-  });
-}
-
-export function memberLogin(
-  data: MemberLoginData
-): Promise<MemberLoginResponse> {
-  return memberApiRequest('/api/members/login', {
-    method: 'POST',
-    body: JSON.stringify(data)
-  });
-}
-
-export function fetchMemberSession(): Promise<MemberSessionResponse> {
-  return memberApiRequest('/api/members/me');
-}
-
-export function updateMemberProfile(
-  updates: MemberProfileUpdate
-): Promise<MemberProfileUpdateResponse> {
-  return memberApiRequest('/api/members/me', {
-    method: 'PATCH',
-    body: JSON.stringify(updates)
-  });
-}
-
-export function memberLogout(): Promise<{
-  success: boolean;
-  message: string;
-}> {
-  return memberApiRequest('/api/members/logout', {
-    method: 'POST'
-  });
-}
-
-export function fetchMemberAccounts(): Promise<{
-  success: boolean;
-  accounts: MemberAccount[];
-}> {
-  return memberApiRequest('/api/admin/member-accounts');
-}
-
-export function adminUpdateMemberAccountStatus(
-  id: string,
-  status: MemberAccountStatus,
-  rejectionReason = ''
-): Promise<{ success: boolean; message: string }> {
-  return memberApiRequest(
-    `/api/admin/member-accounts/${encodeURIComponent(id)}/status`,
+export async function memberRegister(data: MemberRegistrationData) {
+  return memberApiRequest<MemberRegisterResponse>(
+    '/api/members/register',
     {
-      method: 'PATCH',
-      body: JSON.stringify({
-        status,
-        rejectionReason
-      })
+      method: 'POST',
+      body: JSON.stringify(data)
     }
   );
 }
 
-export function adminDeleteMemberAccount(
-  id: string
-): Promise<{ success: boolean; message: string }> {
-  return memberApiRequest(
+export async function memberLogin(data: MemberLoginData) {
+  return memberApiRequest<MemberLoginResponse>(
+    '/api/members/login',
+    {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }
+  );
+}
+
+export async function fetchMemberSession() {
+  return memberApiRequest<MemberSessionResponse>('/api/members/me');
+}
+
+export async function updateMemberProfile(
+  updates: MemberProfileUpdate
+) {
+  return memberApiRequest<MemberProfileUpdateResponse>(
+    '/api/members/me',
+    {
+      method: 'PATCH',
+      body: JSON.stringify(updates)
+    }
+  );
+}
+
+export async function memberLogout() {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+  }>('/api/members/logout', {
+    method: 'POST'
+  });
+}
+
+/* =========================================
+   ADMIN: MEMBER ACCOUNT MANAGEMENT
+========================================= */
+
+export async function fetchMemberAccounts() {
+  return memberApiRequest<{
+    success: boolean;
+    accounts: MemberAccount[];
+  }>('/api/admin/member-accounts', {
+    headers: getAuthHeaders()
+  });
+}
+
+export async function adminUpdateMemberAccountStatus(
+  id: string,
+  status: MemberAccountStatus,
+  reason = ''
+) {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+    account: MemberAccount;
+  }>(
+    `/api/admin/member-accounts/${encodeURIComponent(id)}/status`,
+    {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ status, reason })
+    }
+  );
+}
+
+export async function adminDeleteMemberAccount(id: string) {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+  }>(
     `/api/admin/member-accounts/${encodeURIComponent(id)}`,
     {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: getAuthHeaders()
     }
   );
 }
