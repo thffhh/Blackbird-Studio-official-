@@ -1,15 +1,14 @@
-
 {
   "name": "blackbird-studio",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -37,7 +36,7 @@
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.28.2",
-    "tailwindcss": "^4.3.3",
+    "tailwindcss": "^4.3.0",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2"
   },
