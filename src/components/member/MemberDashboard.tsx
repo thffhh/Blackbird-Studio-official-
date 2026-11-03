@@ -1,16 +1,26 @@
+
 import React, { useEffect, useState } from 'react';
 import {
   fetchMemberSession,
   updateMemberProfile,
   memberLogout,
+  uploadMedia,
   type MemberSessionUser
-} from '../../services/api';
-import { Loader2, LogOut, Save, UserCircle, ExternalLink } from 'lucide-react';
+} from '../../services/api.ts';
+import {
+  X, LogOut, Save, UserCircle, Camera, Loader2,
+  ExternalLink, ShieldCheck
+} from 'lucide-react';
 
-export default function MemberDashboard() {
+interface Props {
+  onClose: () => void;
+}
+
+export default function MemberDashboard({ onClose }: Props) {
   const [user, setUser] = useState<MemberSessionUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
@@ -22,44 +32,69 @@ export default function MemberDashboard() {
     facebookLink: ''
   });
 
+  const loadProfile = async () => {
+    const result = await fetchMemberSession();
+
+    if (!result.authenticated || !result.user) {
+      window.location.href = '/member/login';
+      return;
+    }
+
+    setUser(result.user);
+    setForm({
+      fullName: result.user.fullName || '',
+      avatarUrl: result.user.profile?.avatarUrl || '',
+      bio: result.user.profile?.bio || '',
+      hobbies: result.user.profile?.hobbies || '',
+      facebookLink: result.user.profile?.facebookLink || ''
+    });
+  };
+
   useEffect(() => {
-    let active = true;
-
-    fetchMemberSession()
-      .then((result) => {
-        if (!active) return;
-
-        if (!result.authenticated || !result.user) {
-          window.location.replace('/member/login');
-          return;
-        }
-
-        setUser(result.user);
-        setForm({
-          fullName: result.user.fullName || '',
-          avatarUrl: result.user.profile?.avatarUrl || '',
-          bio: result.user.profile?.bio || '',
-          hobbies: result.user.profile?.hobbies || '',
-          facebookLink: result.user.profile?.facebookLink || ''
-        });
-      })
-      .catch(() => {
-        if (active) window.location.replace('/member/login');
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
+    loadProfile()
+      .catch(() => setError('Could not load your member profile.'))
+      .finally(() => setLoading(false));
   }, []);
 
-  const change = (
-    field: keyof typeof form,
-    value: string
+  const change = (field: keyof typeof form, value: string) => {
+    setForm(old => ({ ...old, [field]: value }));
+  };
+
+  const handleImageUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>
   ) => {
-    setForm((previous) => ({ ...previous, [field]: value }));
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) return;
+
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setError('Please select a JPG, PNG or WEBP image.');
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Image size must be 5 MB or less.');
+      return;
+    }
+
+    try {
+      setUploading(true);
+      setError('');
+      setMessage('');
+
+      const result = await uploadMedia(file);
+      if (!result.success || !result.url) {
+        throw new Error('Image upload failed.');
+      }
+
+      change('avatarUrl', result.url);
+      setMessage('Photo uploaded. Save your profile to apply it.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Image upload failed.');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const saveProfile = async (event: React.FormEvent) => {
@@ -77,17 +112,7 @@ export default function MemberDashboard() {
         facebookLink: form.facebookLink
       });
 
-      const refreshed = await fetchMemberSession();
-
-      setUser(refreshed.user);
-      setForm({
-        fullName: refreshed.user.fullName || '',
-        avatarUrl: refreshed.user.profile?.avatarUrl || '',
-        bio: refreshed.user.profile?.bio || '',
-        hobbies: refreshed.user.profile?.hobbies || '',
-        facebookLink: refreshed.user.profile?.facebookLink || ''
-      });
-
+      await loadProfile();
       setMessage(result.message || 'Profile updated successfully.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save profile.');
@@ -97,178 +122,197 @@ export default function MemberDashboard() {
   };
 
   const logout = async () => {
+    if (!confirm('Are you sure you want to logout?')) return;
+
     try {
       await memberLogout();
-    } finally {
-      window.location.replace('/member/login');
+      window.location.href = '/';
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Logout failed.');
     }
   };
 
-  if (loading || !user) {
+  if (loading) {
     return (
-      <main className="min-h-screen bg-[#08080a] flex items-center justify-center text-amber-300">
+      <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center text-amber-300">
         <Loader2 className="animate-spin mr-2" />
-        Loading member profile...
-      </main>
+        Loading profile...
+      </div>
     );
   }
+
+  if (!user) return null;
 
   const inputClass =
     'w-full rounded-xl border border-zinc-700 bg-black/40 px-4 py-3 text-white outline-none focus:border-amber-400';
 
   return (
-    <main className="min-h-screen bg-[#08080a] text-white px-4 py-8 sm:px-6">
-      <div className="max-w-4xl mx-auto space-y-6">
-        <header className="flex flex-wrap items-center justify-between gap-4">
+    <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm overflow-y-auto p-3 sm:p-6">
+      <div className="max-w-2xl mx-auto my-4 rounded-2xl border border-amber-500/20 bg-[#101014] text-white shadow-2xl">
+
+        <header className="flex items-center justify-between p-5 border-b border-zinc-800">
           <div>
-            <p className="text-xs tracking-[0.3em] uppercase text-amber-400">
+            <p className="text-xs uppercase tracking-[0.25em] text-amber-400">
               BlackBird Studio
             </p>
-            <h1 className="text-3xl font-black mt-2">Member Dashboard</h1>
-            <p className="text-sm text-zinc-400 mt-1">
-              Manage your member profile and information.
-            </p>
+            <h2 className="text-2xl font-black mt-1">My Profile</h2>
           </div>
 
           <button
-            onClick={logout}
-            className="flex items-center gap-2 rounded-xl border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-800"
+            onClick={onClose}
+            className="p-2 rounded-lg text-zinc-400 hover:bg-zinc-800"
+            aria-label="Close profile"
           >
-            <LogOut size={16} /> Logout
+            <X />
           </button>
         </header>
 
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 sm:p-7">
+        <div className="p-5 sm:p-7 space-y-6">
+
           <div className="flex flex-wrap items-center gap-4">
             {form.avatarUrl ? (
               <img
                 src={form.avatarUrl}
-                alt="Member avatar"
-                className="w-20 h-20 rounded-full object-cover border-2 border-amber-400"
+                alt="Profile"
+                className="w-24 h-24 rounded-full object-cover border-2 border-amber-400"
               />
             ) : (
-              <UserCircle className="w-20 h-20 text-zinc-600" />
+              <UserCircle className="w-24 h-24 text-zinc-600" />
             )}
 
-            <div>
-              <h2 className="text-xl font-bold">{user.fullName}</h2>
-              <p className="text-sm text-zinc-400">{user.email}</p>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-xl font-bold">{user.fullName}</h3>
+              <p className="text-sm text-zinc-400 break-all">{user.email}</p>
               <p className="text-sm text-amber-300 mt-1">
                 Rank: {user.profile?.rank || 'D'}
               </p>
               <p className="text-xs text-emerald-400 mt-1">
+                <ShieldCheck className="inline w-3.5 h-3.5 mr-1" />
                 Approved Member
               </p>
             </div>
           </div>
-        </section>
 
-        <form
-          onSubmit={saveProfile}
-          className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 sm:p-7 space-y-5"
-        >
-          <div>
-            <h2 className="text-xl font-bold">Edit Profile</h2>
-            <p className="text-sm text-zinc-400 mt-1">
-              Your rank and account email are controlled separately.
-            </p>
-          </div>
+          <form onSubmit={saveProfile} className="space-y-5">
 
-          {error && (
-            <p className="rounded-lg bg-rose-500/10 border border-rose-500/30 p-3 text-sm text-rose-300">
-              {error}
-            </p>
-          )}
+            <div>
+              <label className="block text-sm text-zinc-300 mb-2">
+                Profile Photo
+              </label>
 
-          {message && (
-            <p className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 p-3 text-sm text-emerald-300">
-              {message}
-            </p>
-          )}
+              <label className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 cursor-pointer text-sm">
+                {uploading
+                  ? <Loader2 className="animate-spin" size={17} />
+                  : <Camera size={17} />}
+                {uploading ? 'Uploading...' : 'Choose from Gallery'}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={handleImageUpload}
+                />
+              </label>
+              <p className="text-xs text-zinc-500 mt-2">
+                JPG, PNG or WEBP · Maximum 5 MB
+              </p>
+            </div>
 
-          <label className="block space-y-2">
-            <span className="text-sm text-zinc-300">Full Name</span>
-            <input
-              className={inputClass}
-              value={form.fullName}
-              onChange={(e) => change('fullName', e.target.value)}
-              minLength={2}
-              maxLength={120}
-              required
-            />
-          </label>
+            <label className="block space-y-2">
+              <span className="text-sm text-zinc-300">Full Name</span>
+              <input
+                className={inputClass}
+                value={form.fullName}
+                onChange={e => change('fullName', e.target.value)}
+                minLength={2}
+                maxLength={120}
+                required
+              />
+            </label>
 
-          <label className="block space-y-2">
-            <span className="text-sm text-zinc-300">Avatar Image URL (HTTPS)</span>
-            <input
-              className={inputClass}
-              type="url"
-              value={form.avatarUrl}
-              onChange={(e) => change('avatarUrl', e.target.value)}
-              placeholder="https://example.com/avatar.jpg"
-            />
-          </label>
+            <label className="block space-y-2">
+              <span className="text-sm text-zinc-300">Bio / About Me</span>
+              <textarea
+                className={inputClass}
+                rows={4}
+                maxLength={5000}
+                value={form.bio}
+                onChange={e => change('bio', e.target.value)}
+              />
+            </label>
 
-          <label className="block space-y-2">
-            <span className="text-sm text-zinc-300">Bio / About Me</span>
-            <textarea
-              className={inputClass}
-              rows={4}
-              maxLength={5000}
-              value={form.bio}
-              onChange={(e) => change('bio', e.target.value)}
-            />
-          </label>
+            <label className="block space-y-2">
+              <span className="text-sm text-zinc-300">Hobbies & Specialties</span>
+              <textarea
+                className={inputClass}
+                rows={3}
+                maxLength={5000}
+                value={form.hobbies}
+                onChange={e => change('hobbies', e.target.value)}
+              />
+            </label>
 
-          <label className="block space-y-2">
-            <span className="text-sm text-zinc-300">Hobbies & Specialties</span>
-            <textarea
-              className={inputClass}
-              rows={3}
-              maxLength={5000}
-              value={form.hobbies}
-              onChange={(e) => change('hobbies', e.target.value)}
-            />
-          </label>
+            <label className="block space-y-2">
+              <span className="text-sm text-zinc-300">Facebook Profile Link</span>
+              <input
+                className={inputClass}
+                type="url"
+                value={form.facebookLink}
+                onChange={e => change('facebookLink', e.target.value)}
+                placeholder="https://www.facebook.com/..."
+              />
+            </label>
 
-          <label className="block space-y-2">
-            <span className="text-sm text-zinc-300">Facebook Profile URL</span>
-            <input
-              className={inputClass}
-              type="url"
-              value={form.facebookLink}
-              onChange={(e) => change('facebookLink', e.target.value)}
-              placeholder="https://www.facebook.com/your-profile"
-            />
-          </label>
+            <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-3 text-sm text-zinc-400">
+              Your rank is managed by the BlackBird Studio Admin.
+              <strong className="block text-amber-300 mt-1">
+                Current Rank: {user.profile?.rank || 'D'}
+              </strong>
+            </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800 pt-5">
-            <span className="text-xs text-zinc-500">
-              Rank: {user.profile?.rank || 'D'} (Admin managed)
-            </span>
+            {error && (
+              <p className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg p-3">
+                {error}
+              </p>
+            )}
+
+            {message && (
+              <p className="text-sm text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3">
+                {message}
+              </p>
+            )}
 
             <button
               type="submit"
-              disabled={saving}
-              className="flex items-center gap-2 rounded-xl bg-amber-400 px-5 py-3 font-bold text-black hover:bg-amber-300 disabled:opacity-50"
+              disabled={saving || uploading}
+              className="w-full rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-bold py-3 flex items-center justify-center gap-2 disabled:opacity-50"
             >
-              {saving ? <Loader2 className="animate-spin" size={17} /> : <Save size={17} />}
+              {saving
+                ? <Loader2 className="animate-spin" size={18} />
+                : <Save size={18} />}
               {saving ? 'Saving...' : 'Save Profile'}
             </button>
-          </div>
+          </form>
 
           {form.facebookLink && (
             <a
               href={form.facebookLink}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-2 text-sm text-amber-300 hover:underline"
+              className="inline-flex items-center gap-2 text-sm text-amber-300"
             >
               View Facebook Profile <ExternalLink size={14} />
             </a>
           )}
-        </form>
+
+          <button
+            onClick={logout}
+            className="w-full border border-rose-500/30 text-rose-300 hover:bg-rose-500/10 rounded-xl py-3 flex items-center justify-center gap-2"
+          >
+            <LogOut size={17} /> Logout
+          </button>
+        </div>
       </div>
-    </main>
+    </div>
   );
 }
