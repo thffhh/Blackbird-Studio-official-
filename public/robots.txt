@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://blackbird-studio-official-iixr.vercel.app/sitemap.xml
