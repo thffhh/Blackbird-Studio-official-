@@ -1057,8 +1057,12 @@ export async function createServer() {
           success: true,
           accounts: rows
         });
+
       } catch (error) {
-        console.error('[BlackBird] Member account list error:', error);
+        console.error(
+          '[BlackBird] Member account list error:',
+          error
+        );
 
         return res.status(500).json({
           error: 'Could not load member accounts.'
@@ -1066,6 +1070,7 @@ export async function createServer() {
       }
     }
   );
+
 
   /* =========================================
      ADMIN: UPDATE MEMBER ACCOUNT STATUS
@@ -1111,18 +1116,22 @@ export async function createServer() {
           UPDATE blackbird_member_accounts
           SET
             status = ${status},
+
             rejection_reason = ${
               status === 'rejected' || status === 'suspended'
                 ? (reason || '').trim()
                 : ''
             },
-            approved_at = ${
-              status === 'approved'
-                ? sql`NOW()`
-                : null
-            },
+
+            approved_at = CASE
+              WHEN ${status} = 'approved' THEN NOW()
+              ELSE NULL
+            END,
+
             updated_at = NOW()
+
           WHERE id = ${accountId}::uuid
+
           RETURNING
             id,
             full_name,
@@ -1141,6 +1150,7 @@ export async function createServer() {
           });
         }
 
+        // Revoke existing member sessions when rejected or suspended.
         if (status !== 'approved') {
           await sql`
             DELETE FROM blackbird_member_sessions
@@ -1150,17 +1160,22 @@ export async function createServer() {
 
         return res.json({
           success: true,
+
           message:
             status === 'approved'
               ? 'Member account approved successfully.'
               : status === 'rejected'
                 ? 'Member registration rejected.'
                 : 'Member account suspended successfully.',
+
           account: updated[0]
         });
 
       } catch (error) {
-        console.error('[BlackBird] Account status update error:', error);
+        console.error(
+          '[BlackBird] Account status update error:',
+          error
+        );
 
         return res.status(500).json({
           error: 'Could not update member account status.'
@@ -1168,6 +1183,163 @@ export async function createServer() {
       }
     }
   );
+
+
+  /* =========================================
+     ADMIN: MEMBER ACCOUNT LIST
+  ========================================= */
+
+  app.get(
+    '/api/admin/member-accounts',
+    requireAdminAuth,
+    async (_req, res) => {
+      try {
+        const rows = await sql`
+          SELECT
+            id,
+            full_name,
+            email,
+            status,
+            profile,
+            rejection_reason,
+            created_at,
+            updated_at,
+            approved_at
+          FROM blackbird_member_accounts
+          ORDER BY created_at DESC
+        `;
+
+        return res.json({
+          success: true,
+          accounts: rows
+        });
+
+      } catch (error) {
+        console.error(
+          '[BlackBird] Member account list error:',
+          error
+        );
+
+        return res.status(500).json({
+          error: 'Could not load member accounts.'
+        });
+      }
+    }
+  );
+
+
+  /* =========================================
+     ADMIN: UPDATE MEMBER ACCOUNT STATUS
+  ========================================= */
+
+  app.patch(
+    '/api/admin/member-accounts/:id/status',
+    requireAdminAuth,
+    async (req, res) => {
+      try {
+        const { status, reason } = req.body || {};
+
+        const allowedStatuses = [
+          'approved',
+          'rejected',
+          'suspended'
+        ];
+
+        if (
+          typeof status !== 'string' ||
+          !allowedStatuses.includes(status)
+        ) {
+          return res.status(400).json({
+            error: 'Invalid account status.'
+          });
+        }
+
+        if (
+          reason !== undefined &&
+          (
+            typeof reason !== 'string' ||
+            reason.length > 1000
+          )
+        ) {
+          return res.status(400).json({
+            error: 'Invalid rejection or suspension reason.'
+          });
+        }
+
+        const accountId = req.params.id;
+
+        const updated = await sql`
+          UPDATE blackbird_member_accounts
+          SET
+            status = ${status},
+
+            rejection_reason = ${
+              status === 'rejected' || status === 'suspended'
+                ? (reason || '').trim()
+                : ''
+            },
+
+            approved_at = CASE
+              WHEN ${status} = 'approved' THEN NOW()
+              ELSE NULL
+            END,
+
+            updated_at = NOW()
+
+          WHERE id = ${accountId}::uuid
+
+          RETURNING
+            id,
+            full_name,
+            email,
+            status,
+            profile,
+            rejection_reason,
+            created_at,
+            updated_at,
+            approved_at
+        `;
+
+        if (!updated.length) {
+          return res.status(404).json({
+            error: 'Member account not found.'
+          });
+        }
+
+        // Revoke existing member sessions when rejected or suspended.
+        if (status !== 'approved') {
+          await sql`
+            DELETE FROM blackbird_member_sessions
+            WHERE account_id = ${accountId}::uuid
+          `;
+        }
+
+        return res.json({
+          success: true,
+
+          message:
+            status === 'approved'
+              ? 'Member account approved successfully.'
+              : status === 'rejected'
+                ? 'Member registration rejected.'
+                : 'Member account suspended successfully.',
+
+          account: updated[0]
+        });
+
+      } catch (error) {
+        console.error(
+          '[BlackBird] Account status update error:',
+          error
+        );
+
+        return res.status(500).json({
+          error: 'Could not update member account status.'
+        });
+      }
+    }
+  );
+
 
   /* =========================================
      ADMIN: DELETE MEMBER ACCOUNT
@@ -1178,10 +1350,15 @@ export async function createServer() {
     requireAdminAuth,
     async (req, res) => {
       try {
+        const accountId = req.params.id;
+
         const deleted = await sql`
           DELETE FROM blackbird_member_accounts
-          WHERE id = ${req.params.id}::uuid
-          RETURNING id, full_name, email
+          WHERE id = ${accountId}::uuid
+          RETURNING
+            id,
+            full_name,
+            email
         `;
 
         if (!deleted.length) {
@@ -1197,7 +1374,10 @@ export async function createServer() {
         });
 
       } catch (error) {
-        console.error('[BlackBird] Account deletion error:', error);
+        console.error(
+          '[BlackBird] Account deletion error:',
+          error
+        );
 
         return res.status(500).json({
           error: 'Could not delete member account.'
@@ -1205,6 +1385,52 @@ export async function createServer() {
       }
     }
   );
+
+  /* =========================================
+     ADMIN: DELETE MEMBER ACCOUNT
+  ========================================= */
+
+  app.delete(
+    '/api/admin/member-accounts/:id',
+    requireAdminAuth,
+    async (req, res) => {
+      try {
+        const accountId = req.params.id;
+
+        const deleted = await sql`
+          DELETE FROM blackbird_member_accounts
+          WHERE id = ${accountId}::uuid
+          RETURNING
+            id,
+            full_name,
+            email
+        `;
+
+        if (!deleted.length) {
+          return res.status(404).json({
+            error: 'Member account not found.'
+          });
+        }
+
+        return res.json({
+          success: true,
+          message: 'Member account deleted.',
+          account: deleted[0]
+        });
+
+      } catch (error) {
+        console.error(
+          '[BlackBird] Account deletion error:',
+          error
+        );
+
+        return res.status(500).json({
+          error: 'Could not delete member account.'
+        });
+      }
+    }
+  );
+
 
   /* =========================================
      PUBLIC WEBSITE DATA
