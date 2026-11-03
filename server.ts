@@ -34,34 +34,24 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/* =========================================
-   DATABASE TYPES
-========================================= */
-
 interface DatabaseSchema {
   adminUser: {
     email: string;
     passwordHash: string;
     role: string;
   };
-
   members: Member[];
   applications: Application[];
   projects: Project[];
   socialLinks: SocialLink[];
   settings: StudioSettings;
   customization: WebsiteCustomization;
-
   supabaseConfig?: {
     supabaseUrl: string;
     supabaseAnonKey: string;
     isEnabled: boolean;
   };
 }
-
-/* =========================================
-   DEFAULT SETTINGS
-========================================= */
 
 const DEFAULT_MEMBERS: Member[] = [];
 const DEFAULT_APPLICATIONS: Application[] = [];
@@ -90,12 +80,9 @@ const DEFAULT_CUSTOMIZATION: WebsiteCustomization = {
   desktopBgImage: '',
   mobileBgImage: '',
   bgOverlayOpacity: 0.85,
-
   heroHeading: 'WELCOME TO BLACKBIRD STUDIO',
-
   heroDescription:
     'A creative community of passionate voice artists and dubbing enthusiasts bringing the world of anime alive in Bangla.',
-
   visibleSections: {
     hero: true,
     story: true,
@@ -107,77 +94,41 @@ const DEFAULT_CUSTOMIZATION: WebsiteCustomization = {
   }
 };
 
-/* =========================================
-   NEON DATABASE
-========================================= */
-
 const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!DATABASE_URL) {
-  throw new Error('DATABASE_URL is required.');
-}
-
+if (!DATABASE_URL) throw new Error('DATABASE_URL is required.');
 const sql = neon(DATABASE_URL);
 
-/* =========================================
-   SUPABASE STORAGE
-========================================= */
-
 const SUPABASE_URL = process.env.SUPABASE_URL;
-
 const SUPABASE_SECRET =
   process.env.SUPABASE_SECRET_KEY ||
   process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-const BUCKET =
-  process.env.SUPABASE_STORAGE_BUCKET || 'uploads';
+const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'uploads';
 
 if (!SUPABASE_URL || !SUPABASE_SECRET) {
-  throw new Error(
-    'SUPABASE_URL and SUPABASE_SECRET_KEY are required.'
-  );
+  throw new Error('SUPABASE_URL and SUPABASE_SECRET_KEY are required.');
 }
 
-const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_SECRET,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false
-    },
-    global: {
-      headers: {
-        'X-Client-Info': 'blackbird-studio-server'
-      }
-    }
+const supabase = createClient(SUPABASE_URL, SUPABASE_SECRET, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false
+  },
+  global: {
+    headers: { 'X-Client-Info': 'blackbird-studio-server' }
   }
-);
-
-/* =========================================
-   LOCAL MIGRATION PATH
-========================================= */
+});
 
 const DATA_DIR = path.resolve(
   process.env.DATA_DIR || path.join(__dirname, 'data')
 );
-
 const DB_FILE = path.join(DATA_DIR, 'database.json');
-
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 let database: DatabaseSchema | null = null;
-
 let writeQueue: Promise<void> = Promise.resolve();
 
-/* =========================================
-   DATABASE VALIDATION
-========================================= */
-
-function validateDatabase(
-  value: any
-): value is DatabaseSchema {
+function validateDatabase(value: any): value is DatabaseSchema {
   return (
     !!value &&
     typeof value === 'object' &&
@@ -195,29 +146,18 @@ function validateDatabase(
 
 function readDatabase(): DatabaseSchema {
   if (!database) {
-    throw new Error(
-      'Database has not finished initializing.'
-    );
+    throw new Error('Database has not finished initializing.');
   }
-
   return database;
 }
 
-/* =========================================
-   DATABASE SAVE
-========================================= */
-
 function saveDatabase(db: DatabaseSchema): void {
   database = db;
-
   const snapshot = JSON.stringify(db);
 
   writeQueue = writeQueue
     .catch((error) => {
-      console.error(
-        '[BlackBird] Previous database write failed:',
-        error
-      );
+      console.error('[BlackBird] Previous database write failed:', error);
     })
     .then(async () => {
       await sql`
@@ -237,10 +177,6 @@ async function flushWrites(): Promise<void> {
   await writeQueue;
 }
 
-/* =========================================
-   DATABASE INITIALIZATION
-========================================= */
-
 async function initializeDatabase(): Promise<void> {
   console.log('[BlackBird] Loading database from Neon...');
 
@@ -253,11 +189,8 @@ async function initializeDatabase(): Promise<void> {
 
   if (rows.length > 0) {
     const payload = rows[0].payload;
-
     const parsed =
-      typeof payload === 'string'
-        ? JSON.parse(payload)
-        : payload;
+      typeof payload === 'string' ? JSON.parse(payload) : payload;
 
     if (!validateDatabase(parsed)) {
       throw new Error(
@@ -266,11 +199,7 @@ async function initializeDatabase(): Promise<void> {
     }
 
     database = parsed as DatabaseSchema;
-
-    console.log(
-      '[BlackBird] Existing database loaded successfully.'
-    );
-
+    console.log('[BlackBird] Existing database loaded successfully.');
     return;
   }
 
@@ -279,33 +208,30 @@ async function initializeDatabase(): Promise<void> {
   );
 }
 
-/* =========================================
-   AUTHENTICATION CONFIGURATION
-========================================= */
+/* Authentication */
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-
-const MEMBER_SESSION_TTL_MS =
-  30 * 24 * 60 * 60 * 1000;
-
+const MEMBER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MEMBER_COOKIE_NAME = 'bbs_member_session';
 
-const activeSessions = new Map<string, number>();
+const activeSessions = new Map<
+  string,
+  { username: string; expiresAt: number }
+>();
 
 const rateBuckets = new Map<
   string,
   { count: number; resetAt: number }
 >();
 
-/* =========================================
-   MEMBER AUTHENTICATION HELPERS
-========================================= */
+function getBearerToken(req: Request): string | null {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return null;
+  return header.slice(7).trim() || null;
+}
 
 function hashMemberToken(token: string): string {
-  return crypto
-    .createHash('sha256')
-    .update(token)
-    .digest('hex');
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 function normalizeMemberEmail(email: string): string {
@@ -319,33 +245,22 @@ function isValidMemberEmail(email: string): boolean {
 function getMemberCookie(req: Request): string | null {
   const cookieHeader = req.headers.cookie || '';
 
-  const cookies = cookieHeader.split(';');
-
-  for (const cookie of cookies) {
+  for (const cookie of cookieHeader.split(';')) {
     const separator = cookie.indexOf('=');
-
     if (separator < 0) continue;
 
     const name = cookie.slice(0, separator).trim();
-
     if (name !== MEMBER_COOKIE_NAME) continue;
 
-    return decodeURIComponent(
-      cookie.slice(separator + 1).trim()
-    );
+    return decodeURIComponent(cookie.slice(separator + 1).trim());
   }
 
   return null;
 }
 
-function setMemberCookie(
-  res: Response,
-  token: string
-): void {
+function setMemberCookie(res: Response, token: string): void {
   const secure =
-    process.env.NODE_ENV === 'production'
-      ? '; Secure'
-      : '';
+    process.env.NODE_ENV === 'production' ? '; Secure' : '';
 
   res.setHeader(
     'Set-Cookie',
@@ -355,9 +270,7 @@ function setMemberCookie(
 
 function clearMemberCookie(res: Response): void {
   const secure =
-    process.env.NODE_ENV === 'production'
-      ? '; Secure'
-      : '';
+    process.env.NODE_ENV === 'production' ? '; Secure' : '';
 
   res.setHeader(
     'Set-Cookie',
@@ -369,41 +282,23 @@ function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
-/* =========================================
-   RATE LIMITING
-========================================= */
-
-function rateLimit(
-  prefix: string,
-  limit: number,
-  windowMs: number
-) {
-  return (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ) => {
+function rateLimit(prefix: string, limit: number, windowMs: number) {
+  return (req: Request, res: Response, next: NextFunction) => {
     const key =
       `${prefix}:` +
       (req.ip || req.socket.remoteAddress || 'unknown');
 
     const now = Date.now();
-
     let bucket = rateBuckets.get(key);
 
     if (!bucket || bucket.resetAt <= now) {
-      bucket = {
-        count: 0,
-        resetAt: now + windowMs
-      };
+      bucket = { count: 0, resetAt: now + windowMs };
     }
 
     bucket.count++;
-
     rateBuckets.set(key, bucket);
 
     res.setHeader('RateLimit-Limit', String(limit));
-
     res.setHeader(
       'RateLimit-Remaining',
       String(Math.max(0, limit - bucket.count))
@@ -419,37 +314,16 @@ function rateLimit(
   };
 }
 
-/* =========================================
-   MEDIA UPLOAD CONFIGURATION
-========================================= */
+/* Upload validation */
 
 const upload = multer({
   storage: multer.memoryStorage(),
-
-  limits: {
-    fileSize: 100 * 1024 * 1024
-  },
-
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const ext = path
-      .extname(file.originalname)
-      .toLowerCase();
+    const ext = path.extname(file.originalname).toLowerCase();
 
-    const imageExt = [
-      '.jpg',
-      '.jpeg',
-      '.png',
-      '.webp',
-      '.gif'
-    ];
-
-    const videoExt = [
-      '.mp4',
-      '.webm',
-      '.mov',
-      '.m4v',
-      '.mkv'
-    ];
+    const imageExt = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+    const videoExt = ['.mp4', '.webm', '.mov', '.m4v', '.mkv'];
 
     const allowedMime = [
       'image/jpeg',
@@ -469,23 +343,12 @@ const upload = multer({
     ) {
       cb(null, true);
     } else {
-      cb(
-        new Error(
-          'Unsupported file format. Upload an image or video.'
-        )
-      );
+      cb(new Error('Unsupported file format. Upload an image or video.'));
     }
   }
 });
 
-/* =========================================
-   MEDIA SIGNATURE VALIDATION
-========================================= */
-
-function hasValidMediaSignature(
-  buffer: Buffer,
-  ext: string
-): boolean {
+function hasValidMediaSignature(buffer: Buffer, ext: string): boolean {
   if (['.jpg', '.jpeg'].includes(ext)) {
     return (
       buffer[0] === 0xff &&
@@ -495,18 +358,13 @@ function hasValidMediaSignature(
   }
 
   if (ext === '.png') {
-    return buffer
-      .subarray(0, 8)
-      .equals(
-        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
-      );
+    return buffer.subarray(0, 8).equals(
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    );
   }
 
   if (ext === '.gif') {
-    return buffer
-      .subarray(0, 6)
-      .toString('ascii')
-      .startsWith('GIF8');
+    return buffer.subarray(0, 6).toString('ascii').startsWith('GIF8');
   }
 
   if (ext === '.webp') {
@@ -521,43 +379,28 @@ function hasValidMediaSignature(
   }
 
   if (['.webm', '.mkv'].includes(ext)) {
-    return buffer
-      .subarray(0, 4)
-      .equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+    return buffer.subarray(0, 4).equals(
+      Buffer.from([0x1a, 0x45, 0xdf, 0xa3])
+    );
   }
 
   return false;
 }
 
-/* =========================================
-   CREATE SERVER
-========================================= */
+/* Server */
 
 export async function createServer() {
   await initializeDatabase();
 
   const app = express();
-
-  const PORT = Number(process.env.PORT || 3000);
+  const uploadRateLimit = rateLimit('upload', 30, 60 * 60 * 1000);
 
   app.disable('x-powered-by');
 
   app.use(
-    (
-      req: Request,
-      res: Response,
-      next: NextFunction
-    ) => {
-      res.setHeader(
-        'X-Content-Type-Options',
-        'nosniff'
-      );
-
-      res.setHeader(
-        'Referrer-Policy',
-        'strict-origin-when-cross-origin'
-      );
-
+    (_req: Request, res: Response, next: NextFunction) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
       res.setHeader('X-Frame-Options', 'DENY');
 
       if (process.env.NODE_ENV === 'production') {
@@ -573,10 +416,7 @@ export async function createServer() {
         return flushWrites()
           .then(() => originalJson(body))
           .catch((error) => {
-            console.error(
-              '[BlackBird] Neon write failed:',
-              error
-            );
+            console.error('[BlackBird] Neon write failed:', error);
 
             if (!res.headersSent) {
               return res.status(503).send({
@@ -593,38 +433,25 @@ export async function createServer() {
   );
 
   app.use(express.json({ limit: '2mb' }));
-
-  app.use(
-    express.urlencoded({
-      extended: true,
-      limit: '2mb'
-    })
-  );
-
-  /* =========================================
-     ADMIN AUTH MIDDLEWARE
-  ========================================= */
+  app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
   function requireAdminAuth(
     req: Request,
     res: Response,
     next: NextFunction
   ) {
-    const header = req.headers.authorization;
+    const token = getBearerToken(req);
 
-    if (!header?.startsWith('Bearer ')) {
+    if (!token) {
       return res.status(401).json({
         error: 'Unauthorized: Admin session required.'
       });
     }
 
-    const token = header.slice(7);
+    const session = activeSessions.get(token);
 
-    const expires = activeSessions.get(token);
-
-    if (!expires || expires <= Date.now()) {
+    if (!session || session.expiresAt <= Date.now()) {
       activeSessions.delete(token);
-
       return res.status(401).json({
         error: 'Session expired or invalid. Please log in again.'
       });
@@ -632,10 +459,6 @@ export async function createServer() {
 
     next();
   }
-
-  /* =========================================
-     MEMBER AUTHENTICATION MIDDLEWARE
-  ========================================= */
 
   async function requireMemberAuth(
     req: Request,
@@ -654,15 +477,9 @@ export async function createServer() {
       const tokenHash = hashMemberToken(token);
 
       const rows = await sql`
-        SELECT
-          a.id,
-          a.full_name,
-          a.email,
-          a.status,
-          a.profile
+        SELECT a.id, a.full_name, a.email, a.status, a.profile
         FROM blackbird_member_sessions s
-        JOIN blackbird_member_accounts a
-          ON a.id = s.account_id
+        JOIN blackbird_member_accounts a ON a.id = s.account_id
         WHERE s.token_hash = ${tokenHash}
           AND s.expires_at > NOW()
         LIMIT 1
@@ -670,7 +487,6 @@ export async function createServer() {
 
       if (!rows.length) {
         clearMemberCookie(res);
-
         return res.status(401).json({
           error: 'Your session has expired. Please log in again.'
         });
@@ -681,30 +497,23 @@ export async function createServer() {
           DELETE FROM blackbird_member_sessions
           WHERE token_hash = ${tokenHash}
         `;
-
         clearMemberCookie(res);
-
         return res.status(403).json({
           error: 'Your member account is not approved.'
         });
       }
 
       res.locals.memberAccount = rows[0];
-
       next();
     } catch (error) {
       console.error('[BlackBird] Member auth error:', error);
-
       return res.status(500).json({
         error: 'Could not verify member session.'
       });
     }
   }
 
-  
-  /* =========================================
-     MEMBER REGISTRATION
-  ========================================= */
+  /* Member registration */
 
   app.post(
     '/api/members/register',
@@ -757,7 +566,7 @@ export async function createServer() {
           });
         }
 
-        const passwordHash = bcrypt.hashSync(password, 12);
+        const passwordHash = await bcrypt.hash(password, 12);
 
         const profile = {
           avatarUrl: '',
@@ -786,7 +595,6 @@ export async function createServer() {
           message: 'Registration submitted. Please wait for admin approval.',
           account: created[0]
         });
-
       } catch (error: any) {
         if (error?.code === '23505') {
           return res.status(409).json({
@@ -795,7 +603,6 @@ export async function createServer() {
         }
 
         console.error('[BlackBird] Registration error:', error);
-
         return res.status(500).json({
           error: 'Registration failed. Please try again.'
         });
@@ -803,9 +610,7 @@ export async function createServer() {
     }
   );
 
-  /* =========================================
-     MEMBER LOGIN
-  ========================================= */
+  /* Member login */
 
   app.post(
     '/api/members/login',
@@ -834,7 +639,7 @@ export async function createServer() {
 
         if (
           !rows.length ||
-          !bcrypt.compareSync(password, rows[0].password_hash)
+          !(await bcrypt.compare(password, rows[0].password_hash))
         ) {
           return res.status(401).json({
             error: 'Invalid email or password.'
@@ -892,10 +697,8 @@ export async function createServer() {
             profile: account.profile
           }
         });
-
       } catch (error) {
         console.error('[BlackBird] Member login error:', error);
-
         return res.status(500).json({
           error: 'Login failed. Please try again.'
         });
@@ -903,217 +706,180 @@ export async function createServer() {
     }
   );
 
-  /* =========================================
-     MEMBER SESSION / PROFILE
-  ========================================= */
+  /* Member session */
 
-  app.get(
-    '/api/members/me',
-    requireMemberAuth,
-    (_req, res) => {
+  app.get('/api/members/me', requireMemberAuth, (_req, res) => {
+    const account = res.locals.memberAccount;
+    res.setHeader('Cache-Control', 'no-store');
+
+    return res.json({
+      authenticated: true,
+      user: {
+        id: account.id,
+        fullName: account.full_name,
+        email: account.email,
+        status: account.status,
+        profile: account.profile
+      }
+    });
+  });
+
+  /* Member profile update */
+
+  app.patch('/api/members/me', requireMemberAuth, async (req, res) => {
+    try {
       const account = res.locals.memberAccount;
+      const update = req.body || {};
 
-      res.setHeader('Cache-Control', 'no-store');
+      const allowed = [
+        'fullName',
+        'avatarUrl',
+        'bio',
+        'hobbies',
+        'facebookLink'
+      ];
 
-      return res.json({
-        authenticated: true,
-        user: {
-          id: account.id,
-          fullName: account.full_name,
-          email: account.email,
-          status: account.status,
-          profile: account.profile
+      const profile = { ...(account.profile || {}) };
+      let newFullName = account.full_name;
+
+      if (update.fullName !== undefined) {
+        if (
+          typeof update.fullName !== 'string' ||
+          update.fullName.trim().length < 2 ||
+          update.fullName.trim().length > 120
+        ) {
+          return res.status(400).json({
+            error: 'Name must be between 2 and 120 characters.'
+          });
         }
-      });
-    }
-  );
+        newFullName = update.fullName.trim();
+      }
 
-  /* =========================================
-     MEMBER PROFILE UPDATE
-     Members cannot change their own rank.
-  ========================================= */
+      for (const key of allowed) {
+        if (key === 'fullName' || update[key] === undefined) continue;
 
-  app.patch(
-    '/api/members/me',
-    requireMemberAuth,
-    async (req, res) => {
-      try {
-        const account = res.locals.memberAccount;
-        const update = req.body || {};
-
-        const allowed = [
-          'fullName',
-          'avatarUrl',
-          'bio',
-          'hobbies',
-          'facebookLink'
-        ];
-
-        const profile = {
-          ...(account.profile || {})
-        };
-
-        let newFullName = account.full_name;
-
-        if (update.fullName !== undefined) {
-          if (
-            typeof update.fullName !== 'string' ||
-            update.fullName.trim().length < 2 ||
-            update.fullName.trim().length > 120
-          ) {
-            return res.status(400).json({
-              error: 'Name must be between 2 and 120 characters.'
-            });
-          }
-
-          newFullName = update.fullName.trim();
-        }
-
-        for (const key of allowed) {
-          if (key === 'fullName' || update[key] === undefined) {
-            continue;
-          }
-
-          if (
-            typeof update[key] !== 'string' ||
-            update[key].length > 5000
-          ) {
-            return res.status(400).json({
-              error: `Invalid profile field: ${key}`
-            });
-          }
-
-          const value = update[key].trim();
-
-          if (
-            key === 'facebookLink' &&
-            value &&
-            !/^https:\/\/(www\.)?facebook\.com\/[^\s]+$/i.test(value)
-          ) {
-            return res.status(400).json({
-              error: 'Please provide a valid Facebook profile URL.'
-            });
-          }
-
-          if (
-            key === 'avatarUrl' &&
-            value &&
-            !/^https:\/\/[^\s]+$/i.test(value)
-          ) {
-            return res.status(400).json({
-              error: 'Profile picture URL must use HTTPS.'
-            });
-          }
-
-          profile[key] = value;
-        }
-
-        // Preserve the Admin-controlled rank.
-        profile.rank =
-          (OFFICIAL_RANKS as readonly string[]).includes(profile.rank)
-            ? profile.rank
-            : 'D';
-
-        const updated = await sql`
-          UPDATE blackbird_member_accounts
-          SET
-            full_name = ${newFullName},
-            profile = ${JSON.stringify(profile)}::jsonb,
-            updated_at = NOW()
-          WHERE id = ${account.id}
-          RETURNING id
-        `;
-
-        if (!updated.length) {
-          return res.status(404).json({
-            error: 'Member account not found.'
+        if (
+          typeof update[key] !== 'string' ||
+          update[key].length > 5000
+        ) {
+          return res.status(400).json({
+            error: `Invalid profile field: ${key}`
           });
         }
 
-        const db = readDatabase();
+        const value = update[key].trim();
 
-        const rosterIndex = db.members.findIndex(
-          (member) => member.sourceMemberAccountId === account.id
-        );
-
-        if (rosterIndex >= 0) {
-          db.members[rosterIndex] = {
-            ...db.members[rosterIndex],
-            name: newFullName,
-            avatarUrl: profile.avatarUrl || '',
-            bio: profile.bio || '',
-            hobbies: profile.hobbies || '',
-            facebookLink: profile.facebookLink || ''
-          };
-
-          saveDatabase(db);
+        if (
+          key === 'facebookLink' &&
+          value &&
+          !/^https:\/\/(www\.)?facebook\.com\/[^\s]+$/i.test(value)
+        ) {
+          return res.status(400).json({
+            error: 'Please provide a valid Facebook profile URL.'
+          });
         }
 
-        return res.json({
-          success: true,
-          message: 'Profile updated successfully.',
-          profile,
-          fullName: newFullName
-        });
-
-      } catch (error) {
-        console.error('[BlackBird] Profile update error:', error);
-
-        return res.status(500).json({
-          error: 'Could not update profile.'
-        });
-      }
-    }
-  );
-
-  /* =========================================
-     MEMBER LOGOUT
-  ========================================= */
-
-  app.post(
-    '/api/members/logout',
-    async (req, res) => {
-      try {
-        const token = getMemberCookie(req);
-
-        if (token) {
-          const tokenHash = hashMemberToken(token);
-
-          await sql`
-            DELETE FROM blackbird_member_sessions
-            WHERE token_hash = ${tokenHash}
-          `;
+        if (
+          key === 'avatarUrl' &&
+          value &&
+          !/^https:\/\/[^\s]+$/i.test(value)
+        ) {
+          return res.status(400).json({
+            error: 'Profile picture URL must use HTTPS.'
+          });
         }
 
-        clearMemberCookie(res);
+        profile[key] = value;
+      }
 
-        return res.json({
-          success: true,
-          message: 'Logged out successfully.'
-        });
+      // Rank remains controlled by Admin only.
+      profile.rank =
+        (OFFICIAL_RANKS as readonly string[]).includes(profile.rank)
+          ? profile.rank
+          : 'D';
 
-      } catch (error) {
-        console.error('[BlackBird] Member logout error:', error);
+      const updated = await sql`
+        UPDATE blackbird_member_accounts
+        SET
+          full_name = ${newFullName},
+          profile = ${JSON.stringify(profile)}::jsonb,
+          updated_at = NOW()
+        WHERE id = ${account.id}
+        RETURNING id
+      `;
 
-        clearMemberCookie(res);
-
-        return res.status(500).json({
-          error: 'Logout could not be completed.'
+      if (!updated.length) {
+        return res.status(404).json({
+          error: 'Member account not found.'
         });
       }
-    }
-  );
 
-  /* =========================================
-     MEMBER ROSTER SYNC
-  ========================================= */
+      const db = readDatabase();
+      const rosterIndex = db.members.findIndex(
+        (member) => member.sourceMemberAccountId === account.id
+      );
+
+      if (rosterIndex >= 0) {
+        db.members[rosterIndex] = {
+          ...db.members[rosterIndex],
+          name: newFullName,
+          avatarUrl: profile.avatarUrl || '',
+          bio: profile.bio || '',
+          hobbies: profile.hobbies || '',
+          facebookLink: profile.facebookLink || ''
+        };
+        saveDatabase(db);
+      }
+
+      return res.json({
+        success: true,
+        message: 'Profile updated successfully.',
+        profile,
+        fullName: newFullName
+      });
+    } catch (error) {
+      console.error('[BlackBird] Profile update error:', error);
+      return res.status(500).json({
+        error: 'Could not update profile.'
+      });
+    }
+  });
+
+  /* Member logout */
+
+  app.post('/api/members/logout', async (req, res) => {
+    try {
+      const token = getMemberCookie(req);
+
+      if (token) {
+        const tokenHash = hashMemberToken(token);
+        await sql`
+          DELETE FROM blackbird_member_sessions
+          WHERE token_hash = ${tokenHash}
+        `;
+      }
+
+      clearMemberCookie(res);
+      return res.json({
+        success: true,
+        message: 'Logged out successfully.'
+      });
+    } catch (error) {
+      console.error('[BlackBird] Member logout error:', error);
+      clearMemberCookie(res);
+      return res.status(500).json({
+        error: 'Logout could not be completed.'
+      });
+    }
+  });
+
+  /* Member account to roster sync */
 
   function syncMemberAccountToRoster(
     account: any,
     activate: boolean
-  ): Member {
+  ): Member | null {
     const db = readDatabase();
-
     const profile = account.profile || {};
 
     const validRank = (
@@ -1123,8 +889,7 @@ export async function createServer() {
       : 'D';
 
     const existingIndex = db.members.findIndex(
-      (member) =>
-        member.sourceMemberAccountId === account.id
+      (member) => member.sourceMemberAccountId === account.id
     );
 
     if (existingIndex >= 0) {
@@ -1142,11 +907,12 @@ export async function createServer() {
       };
 
       db.members[existingIndex] = updated;
-
       saveDatabase(db);
-
       return updated;
     }
+
+    // Do not create inactive duplicate roster records on rejection/suspension.
+    if (!activate) return null;
 
     const member: Member = {
       id: 'bbs-mem-' + crypto.randomUUID(),
@@ -1158,20 +924,16 @@ export async function createServer() {
       hobbies: profile.hobbies || '',
       facebookLink: profile.facebookLink || '',
       joiningDate: new Date().toISOString().slice(0, 10),
-      isActive: activate,
+      isActive: true,
       displayOrder: getNextDisplayOrder(db.members)
     };
 
     db.members.push(member);
-
     saveDatabase(db);
-
     return member;
   }
 
-  /* =========================================
-     ADMIN: MEMBER ACCOUNT LIST
-  ========================================= */
+  /* Admin: member account list */
 
   app.get(
     '/api/admin/member-accounts',
@@ -1180,30 +942,29 @@ export async function createServer() {
       try {
         const rows = await sql`
           SELECT
-            id,
-            full_name,
-            email,
-            status,
-            profile,
-            rejection_reason,
-            created_at,
-            updated_at,
-            approved_at
+            id, full_name, email, status, profile,
+            rejection_reason, created_at, updated_at, approved_at
           FROM blackbird_member_accounts
           ORDER BY created_at DESC
         `;
 
-        return res.json({
-          success: true,
-          accounts: rows
+        const db = readDatabase();
+
+        const accounts = rows.map((account: any) => {
+          const linkedMember = db.members.find(
+            (member) => member.sourceMemberAccountId === account.id
+          );
+
+          return {
+            ...account,
+            linkedMemberId: linkedMember?.id || null,
+            linkedMemberName: linkedMember?.name || null
+          };
         });
 
+        return res.json({ success: true, accounts });
       } catch (error) {
-        console.error(
-          '[BlackBird] Member account list error:',
-          error
-        );
-
+        console.error('[BlackBird] Member account list error:', error);
         return res.status(500).json({
           error: 'Could not load member accounts.'
         });
@@ -1211,9 +972,128 @@ export async function createServer() {
     }
   );
 
-  /* =========================================
-     ADMIN: UPDATE MEMBER ACCOUNT STATUS
-  ========================================= */
+  /* Admin: explicitly link account to an existing roster member */
+
+  app.post(
+    '/api/admin/member-accounts/:id/link-roster',
+    requireAdminAuth,
+    async (req, res) => {
+      try {
+        const accountId = req.params.id;
+        const { memberId } = req.body || {};
+
+        if (typeof memberId !== 'string' || !memberId.trim()) {
+          return res.status(400).json({
+            error: 'Select an existing roster member.'
+          });
+        }
+
+        const accountRows = await sql`
+          SELECT id, full_name, email, status, profile
+          FROM blackbird_member_accounts
+          WHERE id = ${accountId}::uuid
+          LIMIT 1
+        `;
+
+        if (!accountRows.length) {
+          return res.status(404).json({
+            error: 'Member account not found.'
+          });
+        }
+
+        const db = readDatabase();
+        const memberIndex = db.members.findIndex(
+          (member) => member.id === memberId
+        );
+
+        if (memberIndex < 0) {
+          return res.status(404).json({
+            error: 'Selected public roster member was not found.'
+          });
+        }
+
+        const alreadyLinked = db.members.find(
+          (member) =>
+            member.sourceMemberAccountId === accountId &&
+            member.id !== memberId
+        );
+
+        if (alreadyLinked) {
+          return res.status(409).json({
+            error: 'This account is already linked to another roster member.'
+          });
+        }
+
+        const otherAccountLink = db.members.find(
+          (member) =>
+            member.id === memberId &&
+            member.sourceMemberAccountId &&
+            member.sourceMemberAccountId !== accountId
+        );
+
+        if (otherAccountLink) {
+          return res.status(409).json({
+            error: 'This roster member is already linked to another account.'
+          });
+        }
+
+        const account = accountRows[0];
+        const selectedMember = db.members[memberIndex];
+
+        const profile = {
+          ...(account.profile || {}),
+          avatarUrl: account.profile?.avatarUrl || selectedMember.avatarUrl || '',
+          bio: account.profile?.bio || selectedMember.bio || '',
+          hobbies: account.profile?.hobbies || selectedMember.hobbies || '',
+          facebookLink:
+            account.profile?.facebookLink ||
+            selectedMember.facebookLink ||
+            '',
+          rank: selectedMember.rank
+        };
+
+        const updatedAccountRows = await sql`
+          UPDATE blackbird_member_accounts
+          SET
+            status = 'approved',
+            profile = ${JSON.stringify(profile)}::jsonb,
+            rejection_reason = '',
+            approved_at = COALESCE(approved_at, NOW()),
+            updated_at = NOW()
+          WHERE id = ${accountId}::uuid
+          RETURNING id, full_name, email, status, profile
+        `;
+
+        db.members[memberIndex] = {
+          ...selectedMember,
+          sourceMemberAccountId: accountId,
+          name: account.full_name,
+          rank: selectedMember.rank,
+          avatarUrl: profile.avatarUrl,
+          bio: profile.bio,
+          hobbies: profile.hobbies,
+          facebookLink: profile.facebookLink,
+          isActive: true
+        };
+
+        saveDatabase(db);
+
+        return res.json({
+          success: true,
+          message: 'Account linked to the existing public member.',
+          account: updatedAccountRows[0],
+          member: db.members[memberIndex]
+        });
+      } catch (error) {
+        console.error('[BlackBird] Link roster error:', error);
+        return res.status(500).json({
+          error: 'Could not link account to roster member.'
+        });
+      }
+    }
+  );
+
+  /* Admin: update account status */
 
   app.patch(
     '/api/admin/member-accounts/:id/status',
@@ -1221,12 +1101,7 @@ export async function createServer() {
     async (req, res) => {
       try {
         const { status, reason } = req.body || {};
-
-        const allowedStatuses = [
-          'approved',
-          'rejected',
-          'suspended'
-        ];
+        const allowedStatuses = ['approved', 'rejected', 'suspended'];
 
         if (
           typeof status !== 'string' ||
@@ -1239,10 +1114,7 @@ export async function createServer() {
 
         if (
           reason !== undefined &&
-          (
-            typeof reason !== 'string' ||
-            reason.length > 1000
-          )
+          (typeof reason !== 'string' || reason.length > 1000)
         ) {
           return res.status(400).json({
             error: 'Invalid rejection or suspension reason.'
@@ -1261,21 +1133,14 @@ export async function createServer() {
                 : ''
             },
             approved_at = CASE
-              WHEN ${status} = 'approved' THEN NOW()
+              WHEN ${status} = 'approved' THEN COALESCE(approved_at, NOW())
               ELSE NULL
             END,
             updated_at = NOW()
           WHERE id = ${accountId}::uuid
           RETURNING
-            id,
-            full_name,
-            email,
-            status,
-            profile,
-            rejection_reason,
-            created_at,
-            updated_at,
-            approved_at
+            id, full_name, email, status, profile,
+            rejection_reason, created_at, updated_at, approved_at
         `;
 
         if (!updated.length) {
@@ -1293,7 +1158,6 @@ export async function createServer() {
             DELETE FROM blackbird_member_sessions
             WHERE account_id = ${accountId}::uuid
           `;
-
           syncMemberAccountToRoster(account, false);
         }
 
@@ -1307,13 +1171,8 @@ export async function createServer() {
                 : 'Member account suspended.',
           account
         });
-
       } catch (error) {
-        console.error(
-          '[BlackBird] Account status update error:',
-          error
-        );
-
+        console.error('[BlackBird] Account status update error:', error);
         return res.status(500).json({
           error: 'Could not update member account status.'
         });
@@ -1321,9 +1180,7 @@ export async function createServer() {
     }
   );
 
-  /* =========================================
-     ADMIN: UPDATE MEMBER ACCOUNT PROFILE
-  ========================================= */
+  /* Admin: update account profile */
 
   app.patch(
     '/api/admin/member-accounts/:id/profile',
@@ -1332,7 +1189,6 @@ export async function createServer() {
       try {
         const accountId = req.params.id;
         const update = req.body || {};
-
         const allowed = [
           'fullName',
           'avatarUrl',
@@ -1355,11 +1211,7 @@ export async function createServer() {
         }
 
         const current = currentRows[0];
-
-        const profile = {
-          ...(current.profile || {})
-        };
-
+        const profile = { ...(current.profile || {}) };
         let fullName = current.full_name;
 
         if (update.fullName !== undefined) {
@@ -1372,14 +1224,11 @@ export async function createServer() {
               error: 'Invalid member name.'
             });
           }
-
           fullName = update.fullName.trim();
         }
 
         for (const key of allowed) {
-          if (key === 'fullName' || update[key] === undefined) {
-            continue;
-          }
+          if (key === 'fullName' || update[key] === undefined) continue;
 
           if (
             typeof update[key] !== 'string' ||
@@ -1423,15 +1272,8 @@ export async function createServer() {
             updated_at = NOW()
           WHERE id = ${accountId}::uuid
           RETURNING
-            id,
-            full_name,
-            email,
-            status,
-            profile,
-            rejection_reason,
-            created_at,
-            updated_at,
-            approved_at
+            id, full_name, email, status, profile,
+            rejection_reason, created_at, updated_at, approved_at
         `;
 
         const account = updated[0];
@@ -1445,13 +1287,8 @@ export async function createServer() {
           message: 'Member profile updated successfully.',
           account
         });
-
       } catch (error) {
-        console.error(
-          '[BlackBird] Admin profile update error:',
-          error
-        );
-
+        console.error('[BlackBird] Admin profile update error:', error);
         return res.status(500).json({
           error: 'Could not update member profile.'
         });
@@ -1459,9 +1296,7 @@ export async function createServer() {
     }
   );
 
-  /* =========================================
-     ADMIN: UPDATE MEMBER ACCOUNT RANK
-  ========================================= */
+  /* Admin: update account rank */
 
   app.patch(
     '/api/admin/member-accounts/:id/rank',
@@ -1505,15 +1340,8 @@ export async function createServer() {
             updated_at = NOW()
           WHERE id = ${accountId}::uuid
           RETURNING
-            id,
-            full_name,
-            email,
-            status,
-            profile,
-            rejection_reason,
-            created_at,
-            updated_at,
-            approved_at
+            id, full_name, email, status, profile,
+            rejection_reason, created_at, updated_at, approved_at
         `;
 
         const account = updated[0];
@@ -1527,13 +1355,8 @@ export async function createServer() {
           message: `Member rank updated to ${rank}.`,
           account
         });
-
       } catch (error) {
-        console.error(
-          '[BlackBird] Rank update error:',
-          error
-        );
-
+        console.error('[BlackBird] Rank update error:', error);
         return res.status(500).json({
           error: 'Could not update member rank.'
         });
@@ -1541,9 +1364,7 @@ export async function createServer() {
     }
   );
 
-  /* =========================================
-     ADMIN: DELETE MEMBER ACCOUNT
-  ========================================= */
+  /* Admin: delete account */
 
   app.delete(
     '/api/admin/member-accounts/:id',
@@ -1564,34 +1385,20 @@ export async function createServer() {
           });
         }
 
-        // Session rows are deleted automatically through ON DELETE CASCADE.
-        // The public roster record is intentionally preserved.
+        // Keep the public roster member when its account is deleted.
         return res.json({
           success: true,
           message: 'Member account deleted.',
           account: deleted[0]
         });
-
       } catch (error) {
-        console.error(
-          '[BlackBird] Account deletion error:',
-          error
-        );
-
+        console.error('[BlackBird] Account deletion error:', error);
         return res.status(500).json({
           error: 'Could not delete member account.'
         });
-      }
-    }
-  );
+      } 
+        /* Public website data */
 
-
-
-  // ============================================
-  // PART 3/3 — EXISTING API + ADMIN + SERVER
-  // ============================================
-
-  // Public website data
   app.get('/api/public-data', (_req: Request, res: Response) => {
     try {
       const db = readDatabase();
@@ -1617,48 +1424,54 @@ export async function createServer() {
           .filter((link) => link.isVisible)
           .sort((a, b) => a.displayOrder - b.displayOrder),
         settings: db.settings,
-        customization: db.customization,
+        customization: db.customization
       });
     } catch (error) {
       console.error('Public data error:', error);
-      res.status(500).json({ error: 'Failed to load public data.' });
+      res.status(500).json({
+        error: 'Failed to load public data.'
+      });
     }
   });
 
-  // Application tracking
+  /* Application tracking */
+
   app.get('/api/applications/track/:id', (req: Request, res: Response) => {
     const db = readDatabase();
+
     const application = db.applications.find(
       (item) => item.id === req.params.id
     );
 
     if (!application) {
       return res.status(404).json({
-        error: 'Application not found.',
+        error: 'Application not found.'
       });
     }
 
     const messages: Record<string, string> = {
       pending: 'Your application is currently under review.',
       approved: 'Congratulations! Your application has been approved.',
-      rejected: 'Your application was not approved.',
+      rejected: 'Your application was not approved.'
     };
 
     res.json({
       id: application.id,
       status: application.status,
-      message: messages[application.status] || 'Application status updated.',
+      message:
+        messages[application.status] || 'Application status updated.'
     });
   });
 
-  // Submit application
+  /* Submit application */
+
   app.post('/api/applications', async (req: Request, res: Response) => {
     try {
       const validation = validateApplication(req.body);
 
       if (!validation.valid) {
         return res.status(400).json({
-          error: validation.error || 'Invalid application data.',
+          error: validation.error || 'Invalid application data.'
         });
       }
 
@@ -1669,26 +1482,27 @@ export async function createServer() {
         ...data,
         id: generateApplicationId(),
         status: 'pending',
-        submittedAt: new Date().toISOString(),
+        submittedAt: new Date().toISOString()
       };
 
       db.applications.push(application);
-      await saveDatabase(db);
+      saveDatabase(db);
 
       res.status(201).json({
         success: true,
         applicationId: application.id,
-        message: 'Application submitted successfully.',
+        message: 'Application submitted successfully.'
       });
     } catch (error) {
       console.error('Application submission error:', error);
       res.status(500).json({
-        error: 'Failed to submit application.',
+        error: 'Failed to submit application.'
       });
     }
   });
 
-  // Supabase media upload
+  /* Supabase media upload */
+
   app.post(
     '/api/upload',
     uploadRateLimit,
@@ -1697,7 +1511,7 @@ export async function createServer() {
       try {
         if (!req.file) {
           return res.status(400).json({
-            error: 'No file was provided.',
+            error: 'No file was provided.'
           });
         }
 
@@ -1705,24 +1519,15 @@ export async function createServer() {
 
         if (file.size > 100 * 1024 * 1024) {
           return res.status(413).json({
-            error: 'File size exceeds the 100MB limit.',
+            error: 'File size exceeds the 100MB limit.'
           });
         }
 
-        const detectedMime = validateMediaSignature(
-          file.buffer,
-          file.mimetype
-        );
+        const ext = path.extname(file.originalname).toLowerCase();
 
-        if (!detectedMime) {
+        if (!hasValidMediaSignature(file.buffer, ext)) {
           return res.status(400).json({
-            error: 'Unsupported or invalid media file.',
-          });
-        }
-
-        if (!supabase) {
-          return res.status(503).json({
-            error: 'Media storage is not configured.',
+            error: 'Unsupported or invalid media file.'
           });
         }
 
@@ -1730,119 +1535,135 @@ export async function createServer() {
           .replace(/[^a-zA-Z0-9._-]/g, '_')
           .slice(-100);
 
-        const filePath = `uploads/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+        const filePath =
+          `uploads/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
 
         const { error } = await supabase.storage
-          .from(SUPABASE_BUCKET)
+          .from(BUCKET)
           .upload(filePath, file.buffer, {
-            contentType: detectedMime,
-            upsert: false,
+            contentType: file.mimetype,
+            upsert: false
           });
 
         if (error) {
           console.error('Supabase upload error:', error);
           return res.status(500).json({
-            error: 'Failed to upload file.',
+            error: 'Failed to upload file.'
           });
         }
 
         const { data } = supabase.storage
-          .from(SUPABASE_BUCKET)
+          .from(BUCKET)
           .getPublicUrl(filePath);
 
         res.status(201).json({
           success: true,
           url: data.publicUrl,
           path: filePath,
-          mimeType: detectedMime,
+          mimeType: file.mimetype
         });
       } catch (error) {
         console.error('Upload error:', error);
         res.status(500).json({
-          error: 'Upload failed.',
+          error: 'Upload failed.'
         });
       }
     }
   );
 
-  // Admin login
-  app.post('/api/auth/login', async (req: Request, res: Response) => {
-    try {
-      const { username, password } = req.body || {};
+  /* Admin login — uses adminUser.email */
 
-      if (
-        typeof username !== 'string' ||
-        typeof password !== 'string' ||
-        !username.trim() ||
-        !password
-      ) {
-        return res.status(400).json({
-          error: 'Username and password are required.',
+  app.post(
+    '/api/auth/login',
+    rateLimit('admin-login', 10, 15 * 60 * 1000),
+    async (req: Request, res: Response) => {
+      try {
+        const { email, username, password } = req.body || {};
+        const loginEmail =
+          typeof email === 'string'
+            ? email.trim().toLowerCase()
+            : typeof username === 'string'
+              ? username.trim().toLowerCase()
+              : '';
+
+        if (!loginEmail || typeof password !== 'string' || !password) {
+          return res.status(400).json({
+            error: 'Email and password are required.'
+          });
+        }
+
+        const db = readDatabase();
+
+        if (loginEmail !== db.adminUser.email.trim().toLowerCase()) {
+          return res.status(401).json({
+            error: 'Invalid email or password.'
+          });
+        }
+
+        const passwordMatches = await bcrypt.compare(
+          password,
+          db.adminUser.passwordHash
+        );
+
+        if (!passwordMatches) {
+          return res.status(401).json({
+            error: 'Invalid email or password.'
+          });
+        }
+
+        const token = generateToken();
+
+        activeSessions.set(token, {
+          username: db.adminUser.email,
+          expiresAt: Date.now() + SESSION_TTL_MS
+        });
+
+        res.json({
+          success: true,
+          token,
+          expiresIn: SESSION_TTL_MS
+        });
+      } catch (error) {
+        console.error('Admin login error:', error);
+        res.status(500).json({
+          error: 'Login failed.'
         });
       }
+    }
+  );
 
-      const db = readDatabase();
+  /* Admin logout */
 
-      if (username.trim() !== db.adminUser.username) {
-        return res.status(401).json({
-          error: 'Invalid username or password.',
-        });
-      }
+  app.post(
+    '/api/auth/logout',
+    requireAdminAuth,
+    (req: Request, res: Response) => {
+      const token = getBearerToken(req);
 
-      const passwordMatches = await bcrypt.compare(
-        password,
-        db.adminUser.passwordHash
-      );
+      if (token) activeSessions.delete(token);
 
-      if (!passwordMatches) {
-        return res.status(401).json({
-          error: 'Invalid username or password.',
-        });
-      }
+      res.json({ success: true });
+    }
+  );
 
-      const token = crypto.randomBytes(48).toString('hex');
+  /* Admin session validation */
 
-      activeSessions.set(token, {
-        username: db.adminUser.username,
-        expiresAt: Date.now() + SESSION_TTL,
-      });
+  app.get(
+    '/api/auth/session',
+    requireAdminAuth,
+    (req: Request, res: Response) => {
+      const token = getBearerToken(req);
+      const session = token ? activeSessions.get(token) : undefined;
 
       res.json({
-        success: true,
-        token,
-        expiresIn: SESSION_TTL,
-      });
-    } catch (error) {
-      console.error('Admin login error:', error);
-      res.status(500).json({
-        error: 'Login failed.',
+        authenticated: true,
+        username: session?.username || ''
       });
     }
-  });
+  );
 
-  // Admin logout
-  app.post('/api/auth/logout', requireAdminAuth, (req: Request, res: Response) => {
-    const token = getBearerToken(req);
+  /* Change admin password */
 
-    if (token) {
-      activeSessions.delete(token);
-    }
-
-    res.json({ success: true });
-  });
-
-  // Admin session validation
-  app.get('/api/auth/session', requireAdminAuth, (req: Request, res: Response) => {
-    const token = getBearerToken(req);
-    const session = token ? activeSessions.get(token) : undefined;
-
-    res.json({
-      authenticated: true,
-      username: session?.username || '',
-    });
-  });
-
-  // Change admin password
   app.post(
     '/api/auth/change-password',
     requireAdminAuth,
@@ -1856,13 +1677,13 @@ export async function createServer() {
           typeof newPassword !== 'string'
         ) {
           return res.status(400).json({
-            error: 'Current and new passwords are required.',
+            error: 'Current and new passwords are required.'
           });
         }
 
-        if (newPassword.length < 12) {
+        if (newPassword.length < 12 || newPassword.length > 128) {
           return res.status(400).json({
-            error: 'New password must contain at least 12 characters.',
+            error: 'New password must contain 12–128 characters.'
           });
         }
 
@@ -1873,63 +1694,69 @@ export async function createServer() {
 
         if (!valid) {
           return res.status(401).json({
-            error: 'Current password is incorrect.',
+            error: 'Current password is incorrect.'
           });
         }
 
         db.adminUser.passwordHash = await bcrypt.hash(newPassword, 12);
-        await saveDatabase(db);
+        saveDatabase(db);
 
-        // Invalidate existing admin sessions
         activeSessions.clear();
 
         res.json({
           success: true,
-          message: 'Password changed. Please log in again.',
+          message: 'Password changed. Please log in again.'
         });
       } catch (error) {
         console.error('Password change error:', error);
         res.status(500).json({
-          error: 'Failed to change password.',
+          error: 'Failed to change password.'
         });
       }
     }
   );
 
-  // All admin data
-  app.get('/api/admin/all-data', requireAdminAuth, (_req: Request, res: Response) => {
-    const db = readDatabase();
+  /* All admin data */
 
-    res.json({
-      members: sortMembersByOrder(db.members),
-      applications: db.applications,
-      projects: db.projects,
-      socialLinks: db.socialLinks,
-      settings: db.settings,
-      customization: db.customization,
-      supabaseConfig: db.supabaseConfig,
-      stats: {
-        totalMembers: db.members.length,
-        activeMembers: db.members.filter((member) => member.isActive).length,
-        totalApplications: db.applications.length,
-        pendingApplications: db.applications.filter(
-          (application) => application.status === 'pending'
-        ).length,
-        totalProjects: db.projects.length,
-        publishedProjects: db.projects.filter(
-          (project) => project.isPublished
-        ).length,
-      },
-    });
-  });
+  app.get(
+    '/api/admin/all-data',
+    requireAdminAuth,
+    (_req: Request, res: Response) => {
+      const db = readDatabase();
 
-  // Create roster member
+      res.json({
+        members: sortMembersByOrder(db.members),
+        applications: db.applications,
+        projects: db.projects,
+        socialLinks: db.socialLinks,
+        settings: db.settings,
+        customization: db.customization,
+        supabaseConfig: db.supabaseConfig,
+        stats: {
+          totalMembers: db.members.length,
+          activeMembers: db.members.filter((member) => member.isActive).length,
+          totalApplications: db.applications.length,
+          pendingApplications: db.applications.filter(
+            (application) => application.status === 'pending'
+          ).length,
+          totalProjects: db.projects.length,
+          publishedProjects: db.projects.filter(
+            (project) => project.isPublished
+          ).length
+        }
+      });
+    }
+  );
+
+  /* Create roster member */
+
   app.post(
     '/api/admin/members',
     requireAdminAuth,
     async (req: Request, res: Response) => {
       try {
         const db = readDatabase();
+
         const {
           name,
           rank,
@@ -1938,6 +1765,7 @@ export async function createServer() {
           bio,
           joiningDate,
           isActive,
+          facebookLink
         } = req.body || {};
 
         if (
@@ -1946,7 +1774,7 @@ export async function createServer() {
           !OFFICIAL_RANKS.includes(rank)
         ) {
           return res.status(400).json({
-            error: 'A valid member name and rank are required.',
+            error: 'A valid member name and rank are required.'
           });
         }
 
@@ -1957,31 +1785,34 @@ export async function createServer() {
           avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : '',
           hobbies: typeof hobbies === 'string' ? hobbies : '',
           bio: typeof bio === 'string' ? bio : '',
+          facebookLink:
+            typeof facebookLink === 'string' ? facebookLink : '',
           joiningDate:
             typeof joiningDate === 'string'
               ? joiningDate
               : new Date().toISOString().slice(0, 10),
           isActive: typeof isActive === 'boolean' ? isActive : true,
-          displayOrder: getNextDisplayOrder(db.members),
+          displayOrder: getNextDisplayOrder(db.members)
         };
 
         db.members.push(member);
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.status(201).json({
           success: true,
-          member,
+          member
         });
       } catch (error) {
         console.error('Create member error:', error);
         res.status(500).json({
-          error: 'Failed to create member.',
+          error: 'Failed to create member.'
         });
       }
     }
   );
 
-  // Reorder roster members
+  /* Reorder roster members */
+
   app.put(
     '/api/admin/members/reorder',
     requireAdminAuth,
@@ -1994,29 +1825,29 @@ export async function createServer() {
           !memberIds.every((id) => typeof id === 'string')
         ) {
           return res.status(400).json({
-            error: 'A valid memberIds array is required.',
+            error: 'A valid memberIds array is required.'
           });
         }
 
         const db = readDatabase();
         db.members = reindexMembers(db.members, memberIds);
-
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          members: sortMembersByOrder(db.members),
+          members: sortMembersByOrder(db.members)
         });
       } catch (error) {
         console.error('Member reorder error:', error);
         res.status(500).json({
-          error: 'Failed to reorder members.',
+          error: 'Failed to reorder members.'
         });
       }
     }
   );
 
-  // Update roster member
+  /* Update roster member */
+
   app.put(
     '/api/admin/members/:id',
     requireAdminAuth,
@@ -2029,7 +1860,7 @@ export async function createServer() {
 
         if (!member) {
           return res.status(404).json({
-            error: 'Member not found.',
+            error: 'Member not found.'
           });
         }
 
@@ -2038,7 +1869,7 @@ export async function createServer() {
         if (updates.name !== undefined) {
           if (typeof updates.name !== 'string' || !updates.name.trim()) {
             return res.status(400).json({
-              error: 'Member name cannot be empty.',
+              error: 'Member name cannot be empty.'
             });
           }
           member.name = updates.name.trim().slice(0, 120);
@@ -2047,7 +1878,7 @@ export async function createServer() {
         if (updates.rank !== undefined) {
           if (!OFFICIAL_RANKS.includes(updates.rank)) {
             return res.status(400).json({
-              error: 'Invalid member rank.',
+              error: 'Invalid member rank.'
             });
           }
           member.rank = updates.rank;
@@ -2077,22 +1908,23 @@ export async function createServer() {
           member.isActive = Boolean(updates.isActive);
         }
 
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          member,
+          member
         });
       } catch (error) {
         console.error('Update member error:', error);
         res.status(500).json({
-          error: 'Failed to update member.',
+          error: 'Failed to update member.'
         });
       }
     }
   );
 
-  // Delete roster member
+  /* Delete roster member */
+
   app.delete(
     '/api/admin/members/:id',
     requireAdminAuth,
@@ -2105,24 +1937,25 @@ export async function createServer() {
 
         if (index === -1) {
           return res.status(404).json({
-            error: 'Member not found.',
+            error: 'Member not found.'
           });
         }
 
         db.members.splice(index, 1);
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({ success: true });
       } catch (error) {
         console.error('Delete member error:', error);
         res.status(500).json({
-          error: 'Failed to delete member.',
+          error: 'Failed to delete member.'
         });
       }
     }
   );
 
-  // Update application
+  /* Update application */
+
   app.put(
     '/api/admin/applications/:id',
     requireAdminAuth,
@@ -2135,27 +1968,28 @@ export async function createServer() {
 
         if (!application) {
           return res.status(404).json({
-            error: 'Application not found.',
+            error: 'Application not found.'
           });
         }
 
         Object.assign(application, req.body || {});
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          application,
+          application
         });
       } catch (error) {
         console.error('Update application error:', error);
         res.status(500).json({
-          error: 'Failed to update application.',
+          error: 'Failed to update application.'
         });
       }
     }
   );
 
-  // Approve application
+  /* Approve application */
+
   app.post(
     '/api/admin/applications/:id/approve',
     requireAdminAuth,
@@ -2168,14 +2002,14 @@ export async function createServer() {
 
         if (!application) {
           return res.status(404).json({
-            error: 'Application not found.',
+            error: 'Application not found.'
           });
         }
 
         if (application.status === 'approved') {
           return res.json({
             success: true,
-            message: 'Application is already approved.',
+            message: 'Application is already approved.'
           });
         }
 
@@ -2198,28 +2032,29 @@ export async function createServer() {
             joiningDate: new Date().toISOString().slice(0, 10),
             isActive: true,
             displayOrder: getNextDisplayOrder(db.members),
-            sourceApplicationId: application.id,
+            sourceApplicationId: application.id
           };
 
           db.members.push(member);
         }
 
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          message: 'Application approved.',
+          message: 'Application approved.'
         });
       } catch (error) {
         console.error('Approve application error:', error);
         res.status(500).json({
-          error: 'Failed to approve application.',
+          error: 'Failed to approve application.'
         });
       }
     }
   );
 
-  // Reject application
+  /* Reject application */
+
   app.post(
     '/api/admin/applications/:id/reject',
     requireAdminAuth,
@@ -2232,37 +2067,38 @@ export async function createServer() {
 
         if (!application) {
           return res.status(404).json({
-            error: 'Application not found.',
+            error: 'Application not found.'
           });
         }
 
         application.status = 'rejected';
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          message: 'Application rejected.',
+          message: 'Application rejected.'
         });
       } catch (error) {
         console.error('Reject application error:', error);
         res.status(500).json({
-          error: 'Failed to reject application.',
+          error: 'Failed to reject application.'
         });
       }
     }
   );
+        /* Create project */
 
-  // Create project
   app.post(
     '/api/admin/projects',
     requireAdminAuth,
     async (req: Request, res: Response) => {
       try {
         const db = readDatabase();
+
         const project = {
           ...req.body,
           id: crypto.randomUUID(),
-          displayOrder: getNextDisplayOrder(db.projects),
+          displayOrder: getNextDisplayOrder(db.projects)
         } as Project;
 
         if (
@@ -2270,27 +2106,28 @@ export async function createServer() {
           !project.title.trim()
         ) {
           return res.status(400).json({
-            error: 'Project title is required.',
+            error: 'Project title is required.'
           });
         }
 
         db.projects.push(project);
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.status(201).json({
           success: true,
-          project,
+          project
         });
       } catch (error) {
         console.error('Create project error:', error);
         res.status(500).json({
-          error: 'Failed to create project.',
+          error: 'Failed to create project.'
         });
       }
     }
   );
 
-  // Reorder projects
+  /* Reorder projects */
+
   app.put(
     '/api/admin/projects/reorder',
     requireAdminAuth,
@@ -2303,146 +2140,158 @@ export async function createServer() {
           !projectIds.every((id) => typeof id === 'string')
         ) {
           return res.status(400).json({
-            error: 'A valid projectIds array is required.',
+            error: 'A valid projectIds array is required.'
           });
         }
 
         const db = readDatabase();
-        db.projects = reindexMembers(db.projects as any, projectIds) as any;
+        db.projects = reindexMembers(
+          db.projects as any,
+          projectIds
+        ) as any;
 
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          projects: db.projects,
+          projects: db.projects
         });
       } catch (error) {
         console.error('Project reorder error:', error);
         res.status(500).json({
-          error: 'Failed to reorder projects.',
+          error: 'Failed to reorder projects.'
         });
       }
     }
   );
 
-  // Update project
+  /* Update project */
+
   app.put(
     '/api/admin/projects/:id',
     requireAdminAuth,
     async (req: Request, res: Response) => {
       try {
         const db = readDatabase();
+
         const project = db.projects.find(
           (item) => item.id === req.params.id
         );
 
         if (!project) {
           return res.status(404).json({
-            error: 'Project not found.',
+            error: 'Project not found.'
           });
         }
 
         Object.assign(project, req.body || {});
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          project,
+          project
         });
       } catch (error) {
         console.error('Update project error:', error);
         res.status(500).json({
-          error: 'Failed to update project.',
+          error: 'Failed to update project.'
         });
       }
     }
   );
 
-  // Delete project
+  /* Delete project */
+
   app.delete(
     '/api/admin/projects/:id',
     requireAdminAuth,
     async (req: Request, res: Response) => {
       try {
         const db = readDatabase();
+
         const index = db.projects.findIndex(
           (project) => project.id === req.params.id
         );
 
         if (index === -1) {
           return res.status(404).json({
-            error: 'Project not found.',
+            error: 'Project not found.'
           });
         }
 
         db.projects.splice(index, 1);
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({ success: true });
       } catch (error) {
         console.error('Delete project error:', error);
         res.status(500).json({
-          error: 'Failed to delete project.',
+          error: 'Failed to delete project.'
         });
       }
     }
   );
 
-  // Update studio settings
+  /* Update studio settings */
+
   app.put(
     '/api/admin/settings',
     requireAdminAuth,
     async (req: Request, res: Response) => {
       try {
         const db = readDatabase();
+
         db.settings = {
           ...db.settings,
-          ...(req.body || {}),
+          ...(req.body || {})
         };
 
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          settings: db.settings,
+          settings: db.settings
         });
       } catch (error) {
         console.error('Settings update error:', error);
         res.status(500).json({
-          error: 'Failed to update settings.',
+          error: 'Failed to update settings.'
         });
       }
     }
   );
 
-  // Update website customization
+  /* Update website customization */
+
   app.put(
     '/api/admin/customization',
     requireAdminAuth,
     async (req: Request, res: Response) => {
       try {
         const db = readDatabase();
+
         db.customization = {
           ...db.customization,
-          ...(req.body || {}),
+          ...(req.body || {})
         };
 
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          customization: db.customization,
+          customization: db.customization
         });
       } catch (error) {
         console.error('Customization update error:', error);
         res.status(500).json({
-          error: 'Failed to update customization.',
+          error: 'Failed to update customization.'
         });
       }
     }
   );
 
-  // Update social links
+  /* Update social links */
+
   app.put(
     '/api/admin/social-links',
     requireAdminAuth,
@@ -2453,27 +2302,28 @@ export async function createServer() {
 
         if (!Array.isArray(socialLinks)) {
           return res.status(400).json({
-            error: 'socialLinks must be an array.',
+            error: 'socialLinks must be an array.'
           });
         }
 
         db.socialLinks = socialLinks;
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          socialLinks: db.socialLinks,
+          socialLinks: db.socialLinks
         });
       } catch (error) {
         console.error('Social links update error:', error);
         res.status(500).json({
-          error: 'Failed to update social links.',
+          error: 'Failed to update social links.'
         });
       }
     }
   );
 
-  // Update Supabase configuration
+  /* Update Supabase configuration */
+
   app.put(
     '/api/admin/supabase-config',
     requireAdminAuth,
@@ -2483,27 +2333,27 @@ export async function createServer() {
 
         db.supabaseConfig = {
           ...db.supabaseConfig,
-          ...(req.body || {}),
+          ...(req.body || {})
         };
 
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          supabaseConfig: db.supabaseConfig,
+          supabaseConfig: db.supabaseConfig
         });
       } catch (error) {
         console.error('Supabase config update error:', error);
         res.status(500).json({
-          error: 'Failed to update Supabase configuration.',
+          error: 'Failed to update Supabase configuration.'
         });
       }
     }
   );
 
-  // Reset website defaults
-  // This is an existing admin-only action. It should only run when
-  // an administrator explicitly requests it from the website.
+  /* Reset defaults — retained as an explicit admin-only endpoint.
+     Do not call this endpoint unless you intentionally want to reset data. */
+
   app.post(
     '/api/admin/reset-defaults',
     requireAdminAuth,
@@ -2518,22 +2368,23 @@ export async function createServer() {
         db.settings = { ...DEFAULT_SETTINGS };
         db.customization = { ...DEFAULT_CUSTOMIZATION };
 
-        await saveDatabase(db);
+        saveDatabase(db);
 
         res.json({
           success: true,
-          message: 'Website defaults restored.',
+          message: 'Website defaults restored.'
         });
       } catch (error) {
         console.error('Reset defaults error:', error);
         res.status(500).json({
-          error: 'Failed to reset website defaults.',
+          error: 'Failed to reset website defaults.'
         });
       }
     }
   );
 
-  // Error handler
+  /* Error handler */
+
   app.use(
     (
       error: any,
@@ -2544,29 +2395,31 @@ export async function createServer() {
       console.error('Request error:', error);
 
       if (error instanceof multer.MulterError) {
-        const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+        const status =
+          error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
 
         return res.status(status).json({
           error:
             error.code === 'LIMIT_FILE_SIZE'
               ? 'File size exceeds the allowed limit.'
-              : error.message,
+              : error.message
         });
       }
 
       if (error?.type === 'entity.too.large') {
         return res.status(413).json({
-          error: 'Request body is too large.',
+          error: 'Request body is too large.'
         });
       }
 
       res.status(500).json({
-        error: 'Internal server error.',
+        error: 'Internal server error.'
       });
     }
   );
 
-  // Frontend serving
+  /* Frontend serving */
+
   const production = process.env.NODE_ENV === 'production';
 
   if (!production) {
@@ -2574,9 +2427,9 @@ export async function createServer() {
 
     const vite = await createViteServer({
       server: {
-        middlewareMode: true,
+        middlewareMode: true
       },
-      appType: 'spa',
+      appType: 'spa'
     });
 
     app.use(vite.middlewares);
@@ -2589,6 +2442,8 @@ export async function createServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  /* Start HTTP server */
 
   const PORT = Number(process.env.PORT) || 4000;
 
@@ -2614,9 +2469,11 @@ export async function createServer() {
   process.on('SIGINT', shutdown);
 }
 
-// Start server
+/* Start server */
+
 createServer().catch((error) => {
   console.error('Failed to start BlackBird Studio server:', error);
   process.exit(1);
 });
-
+    }
+  );
