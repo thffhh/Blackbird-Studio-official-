@@ -3,6 +3,10 @@
  * Types for BlackBird Studio
  */
 
+/* =========================================
+   OFFICIAL RANK SYSTEM
+========================================= */
+
 export const OFFICIAL_RANKS = [
   'D',
   'C',
@@ -12,10 +16,15 @@ export const OFFICIAL_RANKS = [
   'Immortal',
   'Moderator',
   'Admin',
+  'Co-Founder',
   'Owner'
 ] as const;
 
 export type Rank = typeof OFFICIAL_RANKS[number];
+
+/* =========================================
+   PUBLIC MEMBER ROSTER
+========================================= */
 
 export interface Member {
   id: string;
@@ -24,13 +33,26 @@ export interface Member {
   avatarUrl: string;
   hobbies: string;
   bio: string;
+  facebookLink?: string;
   joiningDate: string;
   isActive: boolean;
   displayOrder: number;
+
+  // Existing application relationship
   sourceApplicationId?: string;
+
+  // New member account relationship
+  sourceMemberAccountId?: string;
 }
 
-export type ApplicationStatus = 'pending' | 'approved' | 'rejected';
+/* =========================================
+   APPLICATION SYSTEM
+========================================= */
+
+export type ApplicationStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected';
 
 export interface Application {
   id: string;
@@ -49,6 +71,10 @@ export interface Application {
   adminNotes?: string;
 }
 
+/* =========================================
+   PROJECT / OUR WORKS SYSTEM
+========================================= */
+
 export interface Project {
   id: string;
   title: string;
@@ -64,6 +90,10 @@ export interface Project {
   isPublished: boolean;
   displayOrder: number;
 }
+
+/* =========================================
+   SOCIAL LINKS
+========================================= */
 
 export type SocialPlatform =
   | 'facebook_page'
@@ -85,6 +115,10 @@ export interface SocialLink {
   displayOrder: number;
 }
 
+/* =========================================
+   STUDIO SETTINGS
+========================================= */
+
 export interface StudioSettings {
   studioName: string;
   tagline: string;
@@ -95,6 +129,10 @@ export interface StudioSettings {
   isAnnouncementVisible: boolean;
   foundedYear: string;
 }
+
+/* =========================================
+   WEBSITE CUSTOMIZATION
+========================================= */
 
 export interface WebsiteCustomization {
   accentColor: string;
@@ -120,6 +158,10 @@ export interface WebsiteCustomization {
   };
 }
 
+/* =========================================
+   ADMIN USER
+========================================= */
+
 export interface AdminUser {
   id: string;
   email: string;
@@ -137,15 +179,23 @@ export type MemberAccountStatus =
   | 'rejected'
   | 'suspended';
 
+/**
+ * Member's editable profile information.
+ *
+ * Rank is visible to the member but controlled
+ * exclusively by the Admin.
+ */
 export interface MemberAccountProfile {
   avatarUrl: string;
   bio: string;
   hobbies: string;
-  voiceSpecialties: string;
-  experience: string;
-  portfolio: string;
+  facebookLink: string;
+  rank: Rank;
 }
 
+/**
+ * Member account stored in the database.
+ */
 export interface MemberAccount {
   id: string;
   full_name: string;
@@ -158,16 +208,28 @@ export interface MemberAccount {
   approved_at: string | null;
 }
 
+/* =========================================
+   MEMBER REGISTRATION
+========================================= */
+
 export interface MemberRegistrationData {
   fullName: string;
   email: string;
   password: string;
 }
 
+/* =========================================
+   MEMBER LOGIN
+========================================= */
+
 export interface MemberLoginData {
   email: string;
   password: string;
 }
+
+/* =========================================
+   MEMBER AUTH RESPONSE
+========================================= */
 
 export interface MemberAuthResponse {
   success: boolean;
@@ -177,11 +239,20 @@ export interface MemberAuthResponse {
   account?: MemberAccount;
 }
 
+/* =========================================
+   MEMBER PROFILE UPDATE
+========================================= */
+
+/**
+ * Members can update their own profile fields.
+ *
+ * Rank is intentionally excluded.
+ * Only Admin can change a member's rank.
+ */
 export interface MemberProfileUpdate {
+  fullName?: string;
   avatarUrl?: string;
   bio?: string;
   hobbies?: string;
-  voiceSpecialties?: string;
-  experience?: string;
-  portfolio?: string;
+  facebookLink?: string;
 }
