@@ -236,7 +236,7 @@ async function flushWrites(): Promise<void> {
    DATABASE INITIALIZATION
 ========================================= */
 
-initializeDatabase
+async function initializeDatabase(): Promise<void> {
 
   /*
    * Explicit initial database creation.
@@ -282,8 +282,8 @@ initializeDatabase
   }
 
   throw new Error(
-    'Neon has no BlackBird data yet. Import the old database.json first, or explicitly enable ALLOW_INITIAL_SEED=true for a genuinely new installation. Existing data was not overwritten.'
-  );
+  'Neon has no BlackBird data yet. Import the old database.json first, or explicitly enable ALLOW_INITIAL_SEED=true for a genuinely new installation. Existing data was not overwritten.'
+);
 }
 
 /* =========================================
