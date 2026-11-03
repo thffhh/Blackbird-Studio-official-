@@ -4,26 +4,31 @@ import {
   adminUpdateMemberAccountStatus,
   adminUpdateMemberAccountProfile,
   adminUpdateMemberAccountRank,
-  adminDeleteMemberAccount
+  adminDeleteMemberAccount,
+  adminLinkMemberAccountToRoster
 } from '../../../services/api';
 import {
   OFFICIAL_RANKS,
   type MemberAccount,
   type MemberAccountStatus,
-  type Rank
+  type Rank,
+  type Member
 } from '../../../types';
 
 interface Props {
+  members: Member[];
   onRefreshData: () => Promise<void>;
 }
 
 export const MemberAccountsAdmin: React.FC<Props> = ({
+  members,
   onRefreshData
 }) => {
   const [accounts, setAccounts] = useState<MemberAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const [selectedMembers, setSelectedMembers] = useState<Record<string, string>>({});
 
   const loadAccounts = async () => {
     try {
@@ -104,6 +109,48 @@ export const MemberAccountsAdmin: React.FC<Props> = ({
       await onRefreshData();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Rank update failed.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const linkMember = async (account: MemberAccount) => {
+    const memberId = selectedMembers[account.id];
+
+    if (!memberId) {
+      alert('Please select an existing member first.');
+      return;
+    }
+
+    const selectedMember = members.find(
+      (member) => member.id === memberId
+    );
+
+    if (!selectedMember) {
+      alert('Selected member was not found.');
+      return;
+    }
+
+    if (!confirm(`Link ${account.full_name} with ${selectedMember.name}?`)) {
+      return;
+    }
+
+    try {
+      setBusy(account.id);
+
+      await adminLinkMemberAccountToRoster(account.id, memberId);
+
+      await loadAccounts();
+      await onRefreshData();
+
+      setSelectedMembers((previous) => ({
+        ...previous,
+        [account.id]: ''
+      }));
+
+      alert('Member account linked successfully!');
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not link member account.');
     } finally {
       setBusy(null);
     }
@@ -199,6 +246,61 @@ export const MemberAccountsAdmin: React.FC<Props> = ({
                 <span className={`text-xs px-3 py-1 rounded-full border ${statusColor[account.status] || statusColor.pending}`}>
                   {account.status}
                 </span>
+              </div>
+
+              {/* Link Existing Public Member */}
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 space-y-3">
+                <div>
+                  <h4 className="text-sm font-bold text-amber-300">
+                    Link Existing Public Member
+                  </h4>
+                  <p className="text-xs text-zinc-400 mt-1">
+                    Connect this account to an existing member in the public roster.
+                  </p>
+                </div>
+
+                {account.linkedMemberId ? (
+                  <div className="text-sm text-emerald-300">
+                    <span className="font-semibold">Linked with:</span>{' '}
+                    {account.linkedMemberName || 'Existing Member'}
+                  </div>
+                ) : (
+                  <>
+                    <select
+                      value={selectedMembers[account.id] || ''}
+                      disabled={busy === account.id}
+                      onChange={(event) =>
+                        setSelectedMembers((previous) => ({
+                          ...previous,
+                          [account.id]: event.target.value
+                        }))
+                      }
+                      className="w-full px-3 py-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white text-sm"
+                    >
+                      <option value="">Select an existing member</option>
+
+                      {members
+                        .filter((member) => !member.sourceMemberAccountId)
+                        .map((member) => (
+                          <option key={member.id} value={member.id}>
+                            {member.name} — Rank {member.rank}
+                          </option>
+                        ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      disabled={
+                        busy === account.id ||
+                        !selectedMembers[account.id]
+                      }
+                      onClick={() => void linkMember(account)}
+                      className="w-full px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black text-sm font-bold"
+                    >
+                      {busy === account.id ? 'Linking...' : 'Link Member'}
+                    </button>
+                  </>
+                )}
               </div>
 
               {account.profile?.bio && (
