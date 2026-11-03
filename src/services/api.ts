@@ -9,7 +9,8 @@ import type {
   MemberAccountStatus,
   MemberRegistrationData,
   MemberLoginData,
-  MemberProfileUpdate
+  MemberProfileUpdate,
+  MemberAccountProfile
 } from '../types/index.ts';
 /* =========================================
    MEMBER ACCOUNT APIs
