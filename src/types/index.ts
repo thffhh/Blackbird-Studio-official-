@@ -1,5 +1,5 @@
 
-/**
+/*
  * Types for BlackBird Studio
  */
 
@@ -206,6 +206,8 @@ export interface MemberAccount {
   created_at: string;
   updated_at: string;
   approved_at: string | null;
+  linkedMemberId?: string | null;
+  linkedMemberName?: string | null;
 }
 
 /* =========================================
