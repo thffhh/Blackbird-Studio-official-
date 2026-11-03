@@ -309,10 +309,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
           {/* Member Accounts */}
           {activeTab === 'member-accounts' && (
-            <MemberAccountsAdmin
-              onRefreshData={onRefreshData}
-            />
-          )}
+  <MemberAccountsAdmin
+    members={data.members}
+    onRefreshData={onRefreshData}
+  />
+)}
 
           {/* Application Management */}
           {activeTab === 'applications' && (
