@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { 
-  AdminAllData, 
-  adminSaveMember, 
-  adminDeleteMember, 
-  adminReorderMembers, 
+import {
+  AdminAllData,
+  adminSaveMember,
+  adminDeleteMember,
+  adminReorderMembers,
   adminUpdateApplication,
   adminApproveApplication,
   adminRejectApplication,
@@ -15,6 +15,7 @@ import {
   adminUpdateSocialLinks,
   adminLogout
 } from '../../services/api.ts';
+
 import { OverviewSection } from './sections/OverviewSection.tsx';
 import { MembersSectionAdmin } from './sections/MembersSectionAdmin.tsx';
 import { ApplicationsSectionAdmin } from './sections/ApplicationsSectionAdmin.tsx';
@@ -25,23 +26,24 @@ import { WorksManagementAdmin } from './sections/WorksManagementAdmin.tsx';
 import { SocialLinksAdmin } from './sections/SocialLinksAdmin.tsx';
 import { ContentManagementAdmin } from './sections/ContentManagementAdmin.tsx';
 import { AccountSettingsAdmin } from './sections/AccountSettingsAdmin.tsx';
+import { MemberAccountsAdmin } from './sections/MemberAccountsAdmin.tsx';
 
-import { 
-  LayoutDashboard, 
-  Users, 
-  UserPlus, 
-  ArrowUpDown, 
-  Building2, 
-  Palette, 
-  Film, 
-  Share2, 
-  FileText, 
-  Settings, 
-  LogOut, 
-  Globe, 
-  Menu, 
-  X, 
-  ShieldCheck 
+import {
+  LayoutDashboard,
+  Users,
+  UserPlus,
+  ArrowUpDown,
+  Building2,
+  Palette,
+  Film,
+  Share2,
+  FileText,
+  Settings,
+  LogOut,
+  Globe,
+  Menu,
+  X,
+  ShieldCheck
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -61,16 +63,65 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const tabs = [
-    { id: 'overview', label: 'Dashboard Overview', icon: LayoutDashboard },
-    { id: 'members', label: 'Member Management', icon: Users, badge: data.stats.totalMembers },
-    { id: 'applications', label: 'Application Management', icon: UserPlus, badge: data.stats.pendingApplications, badgeColor: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40' },
-    { id: 'member-order', label: 'Manage Member Order', icon: ArrowUpDown },
-    { id: 'studio-settings', label: 'Studio Settings', icon: Building2 },
-    { id: 'customization', label: 'Website Customization', icon: Palette },
-    { id: 'works', label: 'Our Works Management', icon: Film, badge: data.stats.totalProjects },
-    { id: 'social-links', label: 'Social Media Links', icon: Share2 },
-    { id: 'content', label: 'Website Content', icon: FileText },
-    { id: 'account', label: 'Account Settings', icon: Settings },
+    {
+      id: 'overview',
+      label: 'Dashboard Overview',
+      icon: LayoutDashboard
+    },
+    {
+      id: 'members',
+      label: 'Member Management',
+      icon: Users,
+      badge: data.stats.totalMembers
+    },
+    {
+      id: 'member-accounts',
+      label: 'Member Accounts',
+      icon: Users
+    },
+    {
+      id: 'applications',
+      label: 'Application Management',
+      icon: UserPlus,
+      badge: data.stats.pendingApplications,
+      badgeColor: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40'
+    },
+    {
+      id: 'member-order',
+      label: 'Manage Member Order',
+      icon: ArrowUpDown
+    },
+    {
+      id: 'studio-settings',
+      label: 'Studio Settings',
+      icon: Building2
+    },
+    {
+      id: 'customization',
+      label: 'Website Customization',
+      icon: Palette
+    },
+    {
+      id: 'works',
+      label: 'Our Works Management',
+      icon: Film,
+      badge: data.stats.totalProjects
+    },
+    {
+      id: 'social-links',
+      label: 'Social Media Links',
+      icon: Share2
+    },
+    {
+      id: 'content',
+      label: 'Website Content',
+      icon: FileText
+    },
+    {
+      id: 'account',
+      label: 'Account Settings',
+      icon: Settings
+    }
   ];
 
   const handleLogoutClick = async () => {
@@ -80,15 +131,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-[#08080a] text-slate-100 flex flex-col md:flex-row overflow-hidden animate-fadeIn">
-      
+
       {/* Mobile Top Header */}
       <div className="md:hidden flex items-center justify-between p-4 bg-[#0d0d12] border-b border-zinc-800 shrink-0">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-5 h-5 text-amber-400" />
+
           <span className="font-heading font-black text-sm text-white uppercase tracking-wider">
             Admin Dashboard
           </span>
         </div>
+
         <div className="flex items-center gap-2">
           <button
             onClick={onClose}
@@ -97,46 +150,66 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <Globe className="w-3.5 h-3.5" />
             <span>Site</span>
           </button>
+
           <button
             onClick={() => setMobileSidebarOpen(!mobileSidebarOpen)}
             className="p-1.5 rounded-lg bg-zinc-800 text-zinc-300"
             aria-label="Toggle admin navigation menu"
           >
-            {mobileSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            {mobileSidebarOpen
+              ? <X className="w-5 h-5" />
+              : <Menu className="w-5 h-5" />
+            }
           </button>
         </div>
       </div>
 
       {/* Sidebar Navigation */}
-      <aside className={`
-        ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-        fixed md:static inset-y-0 left-0 z-40 w-72 bg-[#0c0c10] border-r border-zinc-800/80 flex flex-col justify-between transition-transform duration-300 ease-in-out shrink-0
-      `}>
+      <aside
+        className={`
+          ${mobileSidebarOpen
+            ? 'translate-x-0'
+            : '-translate-x-full md:translate-x-0'
+          }
+          fixed md:static inset-y-0 left-0 z-40 w-72
+          bg-[#0c0c10] border-r border-zinc-800/80
+          flex flex-col justify-between transition-transform
+          duration-300 ease-in-out shrink-0
+        `}
+      >
+
         {/* Sidebar Header */}
         <div className="p-6 border-b border-zinc-800/80">
           <div className="flex items-center gap-3 mb-2">
             <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400 font-heading font-bold shadow-[0_0_15px_rgba(212,175,55,0.2)]">
               BB
             </div>
+
             <div>
               <div className="font-heading font-black text-white text-sm tracking-wider">
                 BLACKBIRD STUDIO
               </div>
+
               <div className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider">
                 Admin Control Room
               </div>
             </div>
           </div>
+
           <div className="text-[11px] text-zinc-400 truncate mt-1">
-            Logged in: <span className="text-zinc-300">Authenticated administrator</span>
+            Logged in:{' '}
+            <span className="text-zinc-300">
+              Authenticated administrator
+            </span>
           </div>
         </div>
 
-        {/* 10 Navigation Items */}
+        {/* Sidebar Navigation Items */}
         <nav className="flex-1 overflow-y-auto p-3 space-y-1 scrollbar-none">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
+
             return (
               <button
                 key={tab.id}
@@ -151,12 +224,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-amber-400' : 'text-zinc-500 group-hover:text-zinc-300'}`} />
-                  <span className="truncate">{tab.label}</span>
+                  <Icon
+                    className={`w-4 h-4 ${
+                      isActive
+                        ? 'text-amber-400'
+                        : 'text-zinc-500 group-hover:text-zinc-300'
+                    }`}
+                  />
+
+                  <span className="truncate">
+                    {tab.label}
+                  </span>
                 </div>
 
                 {tab.badge !== undefined && tab.badge > 0 && (
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${tab.badgeColor || 'bg-zinc-800 text-zinc-300 border-zinc-700'}`}>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      tab.badgeColor ||
+                      'bg-zinc-800 text-zinc-300 border-zinc-700'
+                    }`}
+                  >
                     {tab.badge}
                   </span>
                 )}
@@ -165,7 +252,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           })}
         </nav>
 
-        {/* Sidebar Footer Controls */}
+        {/* Sidebar Footer */}
         <div className="p-4 border-t border-zinc-800/80 space-y-2">
           <button
             onClick={onClose}
@@ -188,7 +275,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto bg-[#08080a] p-4 sm:p-8 lg:p-10">
         <div className="max-w-6xl mx-auto">
-          
+
+          {/* Dashboard Overview */}
           {activeTab === 'overview' && (
             <OverviewSection
               data={data}
@@ -204,6 +292,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Member Management */}
           {activeTab === 'members' && (
             <MembersSectionAdmin
               members={data.members}
@@ -218,6 +307,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Member Accounts */}
+          {activeTab === 'member-accounts' && (
+            <MemberAccountsAdmin
+              onRefreshData={onRefreshData}
+            />
+          )}
+
+          {/* Application Management */}
           {activeTab === 'applications' && (
             <ApplicationsSectionAdmin
               applications={data.applications}
@@ -236,6 +333,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Member Order */}
           {activeTab === 'member-order' && (
             <MemberOrderSectionAdmin
               members={data.members}
@@ -246,6 +344,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Studio Settings */}
           {activeTab === 'studio-settings' && (
             <StudioSettingsAdmin
               settings={data.settings}
@@ -256,6 +355,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Website Customization */}
           {activeTab === 'customization' && (
             <WebsiteCustomizationAdmin
               customization={data.customization}
@@ -266,6 +366,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Our Works Management */}
           {activeTab === 'works' && (
             <WorksManagementAdmin
               projects={data.projects}
@@ -284,6 +385,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Social Media Links */}
           {activeTab === 'social-links' && (
             <SocialLinksAdmin
               socialLinks={data.socialLinks}
@@ -294,6 +396,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Website Content */}
           {activeTab === 'content' && (
             <ContentManagementAdmin
               customization={data.customization}
@@ -309,6 +412,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             />
           )}
 
+          {/* Account Settings */}
           {activeTab === 'account' && (
             <AccountSettingsAdmin
               supabaseConfig={data.supabaseConfig}
@@ -318,7 +422,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         </div>
       </main>
-
     </div>
   );
 };
