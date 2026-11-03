@@ -13,7 +13,7 @@ import {
   PublicData,
   AdminAllData
 } from './services/api.ts';
-
+import MemberDashboard from './components/member/MemberDashboard.tsx';
 import { Navbar } from './components/Navbar.tsx';
 import { Hero } from './components/Hero.tsx';
 import { AboutStudio } from './components/AboutStudio.tsx';
@@ -47,9 +47,12 @@ export default function App() {
     return <MemberLogin />;
   }
 
+  if (path === '/member/dashboard') {
+    return <MemberDashboard />;
+  }
+
   return <StudioHomeApp />;
 }
-
 // ============================================
 // MAIN STUDIO WEBSITE
 // ============================================
