@@ -138,7 +138,11 @@ function StudioHomeApp() {
           <span className="font-heading font-black text-amber-400 text-2xl">
             BB
           </span>
-        </div>
+        </div> {isMemberProfileOpen && (
+  <MemberDashboard
+    onClose={() => setIsMemberProfileOpen(false)}
+  />
+)}
 
         <div className="flex items-center gap-2 text-amber-300 font-heading text-sm tracking-widest uppercase">
           <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
