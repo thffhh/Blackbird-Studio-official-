@@ -1,0 +1,810 @@
+-- BLACKBIRD STUDIO MASTER DATABASE SETUP
+-- Review in Supabase SQL Editor before running. Safe/idempotent migrations intended for this project.
+-- Run this on the same Supabase project configured in index.html.
+
+
+-- ===== BEGIN 01-supabase-setup.sql =====
+-- Run this in Supabase Dashboard > SQL Editor > New query.
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  name text not null default 'Member',
+  username text not null unique,
+  email text,
+  age integer,
+  bio text default '',
+  facebook text default '',
+  avatar text default '',
+  skills text default '',
+  role text not null default 'Member' check (role in ('Owner','Admin','Moderator','Member')),
+  joined timestamptz not null default now(),
+  active boolean not null default true,
+  verified boolean not null default false
+);
+
+alter table public.profiles enable row level security;
+
+drop policy if exists "Profiles are publicly readable" on public.profiles;
+create policy "Profiles are publicly readable"
+on public.profiles for select using (active = true);
+
+drop policy if exists "Users can update own profile" on public.profiles;
+create policy "Users can update own profile"
+on public.profiles for update to authenticated
+using (auth.uid() = id) with check (auth.uid() = id);
+
+-- Prevent users from changing their own role through the public client.
+create or replace function public.prevent_profile_role_change()
+returns trigger language plpgsql security definer set search_path = public
+as $$
+begin
+  if new.role is distinct from old.role then
+    raise exception 'Role changes must be performed by a trusted administrator';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_profile_role on public.profiles;
+create trigger protect_profile_role
+before update on public.profiles
+for each row execute function public.prevent_profile_role_change();
+
+-- Create each member profile automatically when Supabase Auth creates a user.
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = public
+as $$
+declare
+  meta jsonb := coalesce(new.raw_user_meta_data, '{}'::jsonb);
+begin
+  insert into public.profiles (id, name, username, email, age, bio, facebook, avatar, skills, role, verified)
+  values (
+    new.id,
+    coalesce(meta->>'name', 'Member'),
+    coalesce(nullif(meta->>'username',''), 'member' || substr(replace(new.id::text,'-',''),1,10)),
+    new.email,
+    nullif(meta->>'age','')::integer,
+    coalesce(meta->>'bio',''),
+    coalesce(meta->>'facebook',''),
+    coalesce(meta->>'avatar',''),
+    coalesce(meta->>'skills',''),
+    'Member',
+    false
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created_profile on auth.users;
+create trigger on_auth_user_created_profile
+after insert on auth.users
+for each row execute procedure public.handle_new_user();
+
+grant select on public.profiles to anon, authenticated;
+grant update (name, username, email, age, bio, facebook, avatar, skills) on public.profiles to authenticated;
+
+-- ===== END 01-supabase-setup.sql =====
+
+
+-- ===== BEGIN 02-role-system.sql =====
+-- Blackbird Studio dynamic role system (Supabase SQL Editor)
+-- Run once after the public.profiles table exists.
+
+create table if not exists public.role_options (
+  role text primary key check (role in ('Owner','Admin','Moderator')),
+  enabled boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.role_options(role, enabled) values
+  ('Owner', true), ('Admin', false), ('Moderator', false)
+on conflict (role) do nothing;
+
+-- If any roles already exist, don't show their claim option again.
+update public.role_options set enabled = false, updated_at = now()
+where (role = 'Owner' and exists (select 1 from public.profiles where role = 'Owner'))
+   or (role = 'Admin' and exists (select 1 from public.profiles where role = 'Admin'))
+   or (role = 'Moderator' and exists (select 1 from public.profiles where role = 'Moderator'));
+
+alter table public.role_options enable row level security;
+drop policy if exists "Anyone can view enabled role options" on public.role_options;
+drop policy if exists "Authenticated can view all role options" on public.role_options;
+create policy "Anyone can view enabled role options"
+on public.role_options for select to anon
+using (enabled = true);
+create policy "Authenticated can view all role options"
+on public.role_options for select to authenticated
+using (true);
+grant select on public.role_options to anon, authenticated;
+revoke insert, update, delete on public.role_options from anon, authenticated;
+
+-- Role changes must be made by these trusted database functions.
+-- Remove older trigger that blocks legitimate SECURITY DEFINER role changes.
+drop trigger if exists protect_profile_role on public.profiles;
+revoke update (role, active, verified, joined, id) on public.profiles from anon, authenticated;
+
+create or replace function public.claim_role(requested_role text)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  caller_id uuid := auth.uid();
+  chosen_role text := requested_role;
+begin
+  if caller_id is null then raise exception 'Please log in first'; end if;
+  if chosen_role not in ('Owner','Admin','Moderator') then
+    raise exception 'This role cannot be claimed';
+  end if;
+  perform pg_advisory_xact_lock(hashtext('blackbird_studio_role_claim'));
+  if not exists (select 1 from public.profiles where id = caller_id) then
+    raise exception 'Create your Member profile first';
+  end if;
+  if not exists (select 1 from public.role_options where role = chosen_role and enabled = true) then
+    raise exception 'This role option is not available';
+  end if;
+  if exists (select 1 from public.profiles where role = chosen_role and id <> caller_id) then
+    raise exception 'This role has already been claimed';
+  end if;
+  update public.profiles set role = chosen_role where id = caller_id;
+  update public.role_options set enabled = false, updated_at = now() where role = chosen_role;
+  return true;
+end;
+$$;
+
+create or replace function public.set_role_option(target_role text, make_available boolean)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare caller_id uuid := auth.uid();
+begin
+  if caller_id is null or not exists (
+    select 1 from public.profiles where id = caller_id and role = 'Owner'
+  ) then raise exception 'Only the Owner can manage role options'; end if;
+  if target_role not in ('Admin','Moderator') then
+    raise exception 'Owner is a one-time claim and cannot be re-opened';
+  end if;
+  perform pg_advisory_xact_lock(hashtext('blackbird_studio_role_claim'));
+  if make_available and exists (select 1 from public.profiles where role = target_role) then
+    raise exception 'That role is currently claimed. Return that member to Member first.';
+  end if;
+  update public.role_options set enabled = make_available, updated_at = now()
+  where role = target_role;
+  if not found then raise exception 'Role option is missing'; end if;
+  return true;
+end;
+$$;
+
+create or replace function public.set_member_role(target_user_id uuid, target_role text)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare caller_id uuid := auth.uid();
+begin
+  if caller_id is null or not exists (
+    select 1 from public.profiles where id = caller_id and role = 'Owner'
+  ) then raise exception 'Only the Owner can change member roles'; end if;
+  if target_role <> 'Member' then raise exception 'This action can only return a role to Member'; end if;
+  if target_user_id = caller_id then raise exception 'Owner cannot change their own role here'; end if;
+  perform pg_advisory_xact_lock(hashtext('blackbird_studio_role_claim'));
+  update public.profiles set role = 'Member'
+  where id = target_user_id and role in ('Admin','Moderator');
+  if not found then raise exception 'Member is not an Admin or Moderator'; end if;
+  return true;
+end;
+$$;
+
+revoke all on function public.claim_role(text) from public, anon;
+revoke all on function public.set_role_option(text, boolean) from public, anon;
+revoke all on function public.set_member_role(uuid, text) from public, anon;
+grant execute on function public.claim_role(text) to authenticated;
+grant execute on function public.set_role_option(text, boolean) to authenticated;
+grant execute on function public.set_member_role(uuid, text) to authenticated;
+
+-- Backward compatibility for an older HTML version that calls claim_owner().
+create or replace function public.claim_owner()
+returns boolean
+language sql
+security definer
+set search_path = ''
+as $$ select public.claim_role('Owner'); $$;
+revoke all on function public.claim_owner() from public, anon;
+grant execute on function public.claim_owner() to authenticated;
+
+-- ===== END 02-role-system.sql =====
+
+
+-- ===== BEGIN 03-facebook-video-and-admin-delete.sql =====
+-- Blackbird Studio: Facebook video profiles + secure Admin Panel user deletion.
+-- Run after 01-supabase-setup.sql and 02-role-system.sql in Supabase SQL Editor.
+
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS facebook_video_url text NOT NULL DEFAULT '';
+
+GRANT UPDATE (facebook_video_url) ON public.profiles TO authenticated;
+
+-- Keep signup profiles complete even when email confirmation is required.
+-- The earlier 01 migration created this trigger function before the video column existed.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  meta jsonb := coalesce(new.raw_user_meta_data, '{}'::jsonb);
+BEGIN
+  INSERT INTO public.profiles
+    (id, name, username, email, age, bio, facebook, facebook_video_url, avatar, skills, role, verified)
+  VALUES
+    (new.id,
+     coalesce(meta->>'name', 'Member'),
+     coalesce(nullif(meta->>'username',''), 'member' || substr(replace(new.id::text,'-',''),1,10)),
+     new.email,
+     nullif(meta->>'age','')::integer,
+     coalesce(meta->>'bio',''),
+     coalesce(meta->>'facebook',''),
+     coalesce(meta->>'facebook_video_url',''),
+     coalesce(meta->>'avatar',''),
+     coalesce(meta->>'skills',''),
+     'Member',
+     false);
+  RETURN new;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_member(target_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  caller_id uuid := auth.uid();
+  caller_role text;
+  target_role text;
+BEGIN
+  IF caller_id IS NULL THEN
+    RAISE EXCEPTION 'Please log in first.';
+  END IF;
+
+  SELECT role INTO caller_role
+  FROM public.profiles
+  WHERE id = caller_id;
+
+  IF caller_role NOT IN ('Owner', 'Admin') OR caller_role IS NULL THEN
+    RAISE EXCEPTION 'Only the Owner or Admin can delete users.';
+  END IF;
+
+  IF target_user_id = caller_id THEN
+    RAISE EXCEPTION 'You cannot delete your own account from this panel.';
+  END IF;
+
+  SELECT role INTO target_role
+  FROM public.profiles
+  WHERE id = target_user_id;
+
+  IF target_role IS NULL THEN
+    RAISE EXCEPTION 'User profile not found.';
+  END IF;
+
+  IF target_role = 'Owner' THEN
+    RAISE EXCEPTION 'The Owner account cannot be deleted from this panel.';
+  END IF;
+
+  IF caller_role = 'Admin' AND target_role <> 'Member' AND target_role <> 'Moderator' THEN
+    RAISE EXCEPTION 'Admins can only delete Members and Moderators.';
+  END IF;
+
+  -- Delete both the public profile and the Supabase Auth account.
+  DELETE FROM public.profiles WHERE id = target_user_id;
+  DELETE FROM auth.users WHERE id = target_user_id;
+
+  RETURN true;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.delete_member(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.delete_member(uuid) TO authenticated;
+
+-- ===== END 03-facebook-video-and-admin-delete.sql =====
+
+
+-- ===== BEGIN 04-live-shared-content.sql =====
+-- Blackbird Studio: shared Studio Room settings and public projects.
+-- Run AFTER 01-supabase-setup.sql, 02-role-system.sql and 03-facebook-video-and-admin-delete.sql.
+
+CREATE TABLE IF NOT EXISTS public.site_settings (
+  key text PRIMARY KEY,
+  value jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.site_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public can read site settings" ON public.site_settings;
+CREATE POLICY "Public can read site settings" ON public.site_settings
+  FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS "Admins can insert site settings" ON public.site_settings;
+CREATE POLICY "Admins can insert site settings" ON public.site_settings
+  FOR INSERT TO authenticated WITH CHECK (
+    EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+DROP POLICY IF EXISTS "Admins can update site settings" ON public.site_settings;
+CREATE POLICY "Admins can update site settings" ON public.site_settings
+  FOR UPDATE TO authenticated USING (
+    EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  ) WITH CHECK (
+    EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+GRANT SELECT ON public.site_settings TO anon, authenticated;
+GRANT INSERT, UPDATE ON public.site_settings TO authenticated;
+
+CREATE TABLE IF NOT EXISTS public.studio_projects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  url text NOT NULL,
+  language text NOT NULL DEFAULT '',
+  image text NOT NULL DEFAULT '',
+  description text NOT NULL DEFAULT '',
+  created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  by_name text NOT NULL DEFAULT 'Studio member',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.studio_projects ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public can read studio projects" ON public.studio_projects;
+CREATE POLICY "Public can read studio projects" ON public.studio_projects
+  FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS "Members can add own studio projects" ON public.studio_projects;
+CREATE POLICY "Members can add own studio projects" ON public.studio_projects
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = created_by);
+DROP POLICY IF EXISTS "Owners admins or creators can update projects" ON public.studio_projects;
+CREATE POLICY "Owners admins or creators can update projects" ON public.studio_projects
+  FOR UPDATE TO authenticated USING (
+    auth.uid() = created_by OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  ) WITH CHECK (
+    auth.uid() = created_by OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+DROP POLICY IF EXISTS "Owners admins or creators can delete projects" ON public.studio_projects;
+CREATE POLICY "Owners admins or creators can delete projects" ON public.studio_projects
+  FOR DELETE TO authenticated USING (
+    auth.uid() = created_by OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+GRANT SELECT ON public.studio_projects TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.studio_projects TO authenticated;
+
+
+-- Enable Supabase Realtime for instant updates without browser refresh.
+-- Safe to run repeatedly. Supabase Realtime also requires the project Realtime service to be enabled.
+DO $$
+DECLARE tbl text;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY['profiles','studio_projects','site_settings'] LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = tbl
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
+    END IF;
+  END LOOP;
+END $$;
+
+-- ===== END 04-live-shared-content.sql =====
+
+
+-- ===== BEGIN 05-project-profile-fixes.sql =====
+-- Blackbird Studio: idempotent compatibility migration for project publishing + profile photos.
+-- Run after migrations 01-04. Existing profile photo data is stored in profiles.avatar (TEXT).
+
+-- Ensure the shared projects table has all fields used by the website.
+CREATE TABLE IF NOT EXISTS public.studio_projects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  url text NOT NULL,
+  language text NOT NULL DEFAULT '',
+  image text NOT NULL DEFAULT '',
+  description text NOT NULL DEFAULT '',
+  created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  by_name text NOT NULL DEFAULT 'Studio member',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.studio_projects
+  ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS image text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS by_name text NOT NULL DEFAULT 'Studio member',
+  ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+ALTER TABLE public.studio_projects ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public can read studio projects" ON public.studio_projects;
+CREATE POLICY "Public can read studio projects"
+  ON public.studio_projects FOR SELECT TO anon, authenticated USING (true);
+
+DROP POLICY IF EXISTS "Members can add own studio projects" ON public.studio_projects;
+CREATE POLICY "Members can add own studio projects"
+  ON public.studio_projects FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = created_by);
+
+DROP POLICY IF EXISTS "Owners admins or creators can update projects" ON public.studio_projects;
+CREATE POLICY "Owners admins or creators can update projects"
+  ON public.studio_projects FOR UPDATE TO authenticated
+  USING (auth.uid() = created_by OR EXISTS (
+    SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin')
+  ))
+  WITH CHECK (auth.uid() = created_by OR EXISTS (
+    SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin')
+  ));
+
+DROP POLICY IF EXISTS "Owners admins or creators can delete projects" ON public.studio_projects;
+CREATE POLICY "Owners admins or creators can delete projects"
+  ON public.studio_projects FOR DELETE TO authenticated
+  USING (auth.uid() = created_by OR EXISTS (
+    SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin')
+  ));
+
+GRANT SELECT ON public.studio_projects TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.studio_projects TO authenticated;
+
+-- Ensure profile photo text is available; do not replace existing photo data.
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS avatar text NOT NULL DEFAULT '';
+GRANT UPDATE (name, username, email, age, bio, avatar, skills) ON public.profiles TO authenticated;
+
+-- Enable live events for shared data (if the publication exists).
+DO $$
+DECLARE tbl text;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    FOREACH tbl IN ARRAY ARRAY['profiles','studio_projects','site_settings'] LOOP
+      IF to_regclass(format('public.%I', tbl)) IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = tbl
+      ) THEN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
+      END IF;
+    END LOOP;
+  END IF;
+END $$;
+
+-- ===== END 05-project-profile-fixes.sql =====
+
+
+-- ===== BEGIN 06-multiple-characters-images.sql =====
+-- Run after migrations 01-05. Adds repeatable character names and image links per project.
+ALTER TABLE public.studio_projects
+  ADD COLUMN IF NOT EXISTS character_names text[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS images text[] NOT NULL DEFAULT '{}';
+
+-- Preserve legacy single-image values in the new array field.
+UPDATE public.studio_projects
+SET images = ARRAY[image]
+WHERE COALESCE(image, '') <> '' AND cardinality(images) = 0;
+
+GRANT SELECT ON public.studio_projects TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.studio_projects TO authenticated;
+
+-- ===== END 06-multiple-characters-images.sql =====
+
+
+-- ===== BEGIN 07-avatar-storage.sql =====
+-- Blackbird Studio PFP storage setup
+-- Run in Supabase Dashboard > SQL Editor after the existing migrations.
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('avatars', 'avatars', true, 5242880, array['image/jpeg','image/png','image/webp','image/gif'])
+on conflict (id) do update set
+  public = true,
+  file_size_limit = 5242880,
+  allowed_mime_types = array['image/jpeg','image/png','image/webp','image/gif'];
+
+-- Public can view profile pictures; only signed-in users can manage files
+-- inside their own user-id folder.
+drop policy if exists "Public can view avatar images" on storage.objects;
+create policy "Public can view avatar images"
+on storage.objects for select
+using (bucket_id = 'avatars');
+
+drop policy if exists "Users upload own avatar images" on storage.objects;
+create policy "Users upload own avatar images"
+on storage.objects for insert to authenticated
+with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "Users update own avatar images" on storage.objects;
+create policy "Users update own avatar images"
+on storage.objects for update to authenticated
+using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text)
+with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "Users delete own avatar images" on storage.objects;
+create policy "Users delete own avatar images"
+on storage.objects for delete to authenticated
+using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ===== END 07-avatar-storage.sql =====
+
+
+-- ===== BEGIN 08-facebook-profile-link.sql =====
+-- Blackbird Studio: save members' Facebook profile links
+-- Run this migration in Supabase SQL Editor.
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS facebook_url text NOT NULL DEFAULT '';
+
+-- Existing setup uses column-level UPDATE grants; add this new column too.
+GRANT UPDATE (facebook_url) ON public.profiles TO authenticated;
+
+-- ===== END 08-facebook-profile-link.sql =====
+
+
+-- ===== BEGIN 09-project-image-storage.sql =====
+-- Blackbird Studio: project image file uploads
+-- Run in Supabase Dashboard > SQL Editor after migrations 01-08.
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'project-images',
+  'project-images',
+  true,
+  5242880,
+  array['image/jpeg','image/png','image/webp','image/gif']
+)
+on conflict (id) do update set
+  public = true,
+  file_size_limit = 5242880,
+  allowed_mime_types = array['image/jpeg','image/png','image/webp','image/gif'];
+
+-- Project images are public so visitors can view published projects.
+drop policy if exists "Public can view project images" on storage.objects;
+create policy "Public can view project images"
+on storage.objects for select
+using (bucket_id = 'project-images');
+
+-- Signed-in members can only upload/manage images inside their own user-id folder.
+drop policy if exists "Users upload own project images" on storage.objects;
+create policy "Users upload own project images"
+on storage.objects for insert to authenticated
+with check (bucket_id = 'project-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "Users update own project images" on storage.objects;
+create policy "Users update own project images"
+on storage.objects for update to authenticated
+using (bucket_id = 'project-images' and (storage.foldername(name))[1] = auth.uid()::text)
+with check (bucket_id = 'project-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "Users delete own project images" on storage.objects;
+create policy "Users delete own project images"
+on storage.objects for delete to authenticated
+using (bucket_id = 'project-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ===== END 09-project-image-storage.sql =====
+
+
+-- ===== BEGIN 10-project-delete.sql =====
+-- Blackbird Studio: allow a member to remove their own projects.
+-- Run in Supabase SQL Editor after the existing studio_projects migrations.
+
+ALTER TABLE public.studio_projects ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Owners admins or creators can delete projects" ON public.studio_projects;
+CREATE POLICY "Owners admins or creators can delete projects"
+  ON public.studio_projects
+  FOR DELETE
+  TO authenticated
+  USING (
+    auth.uid() = created_by
+    OR EXISTS (
+      SELECT 1 FROM public.profiles p
+      WHERE p.id = auth.uid() AND p.role IN ('Owner', 'Admin')
+    )
+  );
+
+GRANT DELETE ON public.studio_projects TO authenticated;
+
+-- ===== END 10-project-delete.sql =====
+
+
+-- ===== BEGIN 11-project-video-storage.sql =====
+-- Blackbird Studio: project video uploads (run in Supabase SQL Editor)
+-- Public videos can be played by visitors; only signed-in users can upload to their own folder.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('project-videos','project-videos',true,52428800,array['video/mp4','video/webm','video/ogg','video/quicktime'])
+on conflict (id) do update set public=true,file_size_limit=52428800,allowed_mime_types=array['video/mp4','video/webm','video/ogg','video/quicktime'];
+
+drop policy if exists "Public can view project videos" on storage.objects;
+create policy "Public can view project videos" on storage.objects for select using (bucket_id='project-videos');
+drop policy if exists "Users upload own project videos" on storage.objects;
+create policy "Users upload own project videos" on storage.objects for insert to authenticated with check (bucket_id='project-videos' and (storage.foldername(name))[1]=auth.uid()::text);
+drop policy if exists "Users update own project videos" on storage.objects;
+create policy "Users update own project videos" on storage.objects for update to authenticated using (bucket_id='project-videos' and (storage.foldername(name))[1]=auth.uid()::text) with check (bucket_id='project-videos' and (storage.foldername(name))[1]=auth.uid()::text);
+drop policy if exists "Users delete own project videos" on storage.objects;
+create policy "Users delete own project videos" on storage.objects for delete to authenticated using (bucket_id='project-videos' and (storage.foldername(name))[1]=auth.uid()::text);
+
+-- ===== END 11-project-video-storage.sql =====
+
+
+-- ===== BEGIN 12-restore-missing-member-profiles.sql =====
+-- Blackbird Studio: restore profile rows for existing Supabase Auth accounts.
+-- Run once in Supabase Dashboard > SQL Editor. This does NOT create or change passwords.
+-- Existing profiles and roles are preserved; only accounts missing a public.profiles row are added.
+
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS facebook_url text NOT NULL DEFAULT '';
+
+INSERT INTO public.profiles
+  (id, name, username, email, bio, avatar, facebook_url, skills, role, active, verified)
+SELECT
+  u.id,
+  COALESCE(NULLIF(u.raw_user_meta_data->>'name',''), NULLIF(split_part(COALESCE(u.email,''),'@',1),''), 'Member'),
+  ('member_' || substr(replace(u.id::text,'-',''),1,12)),
+  u.email,
+  COALESCE(u.raw_user_meta_data->>'bio',''),
+  COALESCE(u.raw_user_meta_data->>'avatar',''),
+  COALESCE(u.raw_user_meta_data->>'facebook_url', u.raw_user_meta_data->>'facebook',''),
+  COALESCE(u.raw_user_meta_data->>'skills',''),
+  'Member', true, false
+FROM auth.users AS u
+LEFT JOIN public.profiles AS p ON p.id = u.id
+WHERE p.id IS NULL
+ON CONFLICT (id) DO NOTHING;
+
+-- Ensure visitors can read active public profiles and users can read their own row.
+DROP POLICY IF EXISTS "Profiles are publicly readable" ON public.profiles;
+CREATE POLICY "Profiles are publicly readable"
+ON public.profiles FOR SELECT TO anon, authenticated
+USING (active = true OR id = (SELECT auth.uid()));
+
+GRANT SELECT ON public.profiles TO anon, authenticated;
+
+-- ===== END 12-restore-missing-member-profiles.sql =====
+
+
+-- ===== BEGIN blackbird-realtime-setup.sql =====
+-- Blackbird Studio: shared Studio Room settings and public projects.
+-- Run AFTER 01-supabase-setup.sql, 02-role-system.sql and 03-facebook-video-and-admin-delete.sql.
+
+CREATE TABLE IF NOT EXISTS public.site_settings (
+  key text PRIMARY KEY,
+  value jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.site_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public can read site settings" ON public.site_settings;
+CREATE POLICY "Public can read site settings" ON public.site_settings
+  FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS "Admins can insert site settings" ON public.site_settings;
+CREATE POLICY "Admins can insert site settings" ON public.site_settings
+  FOR INSERT TO authenticated WITH CHECK (
+    EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+DROP POLICY IF EXISTS "Admins can update site settings" ON public.site_settings;
+CREATE POLICY "Admins can update site settings" ON public.site_settings
+  FOR UPDATE TO authenticated USING (
+    EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  ) WITH CHECK (
+    EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+GRANT SELECT ON public.site_settings TO anon, authenticated;
+GRANT INSERT, UPDATE ON public.site_settings TO authenticated;
+
+CREATE TABLE IF NOT EXISTS public.studio_projects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  url text NOT NULL,
+  language text NOT NULL DEFAULT '',
+  image text NOT NULL DEFAULT '',
+  description text NOT NULL DEFAULT '',
+  created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  by_name text NOT NULL DEFAULT 'Studio member',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.studio_projects ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public can read studio projects" ON public.studio_projects;
+CREATE POLICY "Public can read studio projects" ON public.studio_projects
+  FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS "Members can add own studio projects" ON public.studio_projects;
+CREATE POLICY "Members can add own studio projects" ON public.studio_projects
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = created_by);
+DROP POLICY IF EXISTS "Owners admins or creators can update projects" ON public.studio_projects;
+CREATE POLICY "Owners admins or creators can update projects" ON public.studio_projects
+  FOR UPDATE TO authenticated USING (
+    auth.uid() = created_by OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  ) WITH CHECK (
+    auth.uid() = created_by OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+DROP POLICY IF EXISTS "Owners admins or creators can delete projects" ON public.studio_projects;
+CREATE POLICY "Owners admins or creators can delete projects" ON public.studio_projects
+  FOR DELETE TO authenticated USING (
+    auth.uid() = created_by OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role IN ('Owner','Admin'))
+  );
+GRANT SELECT ON public.studio_projects TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.studio_projects TO authenticated;
+
+
+-- Enable Supabase Realtime for instant updates without browser refresh.
+-- Safe to run repeatedly. Supabase Realtime also requires the project Realtime service to be enabled.
+DO $$
+DECLARE tbl text;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY['profiles','studio_projects','site_settings'] LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = tbl
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
+    END IF;
+  END LOOP;
+END $$;
+
+-- ===== END blackbird-realtime-setup.sql =====
+
+
+-- ===== BEGIN Blackbird-Studio-Media-Storage-Fix.sql =====
+-- Blackbird Studio: combined media storage repair (avatars, project images, project videos)
+-- Run in Supabase Dashboard > SQL Editor. Safe to rerun; does not delete project/profile data.
+
+-- Buckets and limits
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('avatars','avatars',true,5242880,ARRAY['image/jpeg','image/png','image/webp','image/gif'])
+ON CONFLICT (id) DO UPDATE SET public=true, file_size_limit=5242880, allowed_mime_types=EXCLUDED.allowed_mime_types;
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('project-images','project-images',true,10485760,ARRAY['image/jpeg','image/png','image/webp','image/gif'])
+ON CONFLICT (id) DO UPDATE SET public=true, file_size_limit=10485760, allowed_mime_types=EXCLUDED.allowed_mime_types;
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('project-videos','project-videos',true,52428800,ARRAY['video/mp4','video/webm','video/ogg','video/quicktime'])
+ON CONFLICT (id) DO UPDATE SET public=true, file_size_limit=52428800, allowed_mime_types=EXCLUDED.allowed_mime_types;
+
+-- Public read policies (only public media buckets)
+DROP POLICY IF EXISTS "Public can view avatar images" ON storage.objects;
+CREATE POLICY "Public can view avatar images" ON storage.objects FOR SELECT USING (bucket_id='avatars');
+DROP POLICY IF EXISTS "Public can view project images" ON storage.objects;
+CREATE POLICY "Public can view project images" ON storage.objects FOR SELECT USING (bucket_id='project-images');
+DROP POLICY IF EXISTS "Public can view project videos" ON storage.objects;
+CREATE POLICY "Public can view project videos" ON storage.objects FOR SELECT USING (bucket_id='project-videos');
+
+-- Authenticated users can upload/update/delete only files in their own UID folder.
+DROP POLICY IF EXISTS "Users upload own avatar images" ON storage.objects;
+CREATE POLICY "Users upload own avatar images" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id='avatars' AND (storage.foldername(name))[1]=auth.uid()::text);
+DROP POLICY IF EXISTS "Users update own avatar images" ON storage.objects;
+CREATE POLICY "Users update own avatar images" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id='avatars' AND (storage.foldername(name))[1]=auth.uid()::text) WITH CHECK (bucket_id='avatars' AND (storage.foldername(name))[1]=auth.uid()::text);
+DROP POLICY IF EXISTS "Users delete own avatar images" ON storage.objects;
+CREATE POLICY "Users delete own avatar images" ON storage.objects FOR DELETE TO authenticated USING (bucket_id='avatars' AND (storage.foldername(name))[1]=auth.uid()::text);
+
+DROP POLICY IF EXISTS "Users upload own project images" ON storage.objects;
+CREATE POLICY "Users upload own project images" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id='project-images' AND (storage.foldername(name))[1]=auth.uid()::text);
+DROP POLICY IF EXISTS "Users update own project images" ON storage.objects;
+CREATE POLICY "Users update own project images" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id='project-images' AND (storage.foldername(name))[1]=auth.uid()::text) WITH CHECK (bucket_id='project-images' AND (storage.foldername(name))[1]=auth.uid()::text);
+DROP POLICY IF EXISTS "Users delete own project images" ON storage.objects;
+CREATE POLICY "Users delete own project images" ON storage.objects FOR DELETE TO authenticated USING (bucket_id='project-images' AND (storage.foldername(name))[1]=auth.uid()::text);
+
+DROP POLICY IF EXISTS "Users upload own project videos" ON storage.objects;
+CREATE POLICY "Users upload own project videos" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id='project-videos' AND (storage.foldername(name))[1]=auth.uid()::text);
+DROP POLICY IF EXISTS "Users update own project videos" ON storage.objects;
+CREATE POLICY "Users update own project videos" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id='project-videos' AND (storage.foldername(name))[1]=auth.uid()::text) WITH CHECK (bucket_id='project-videos' AND (storage.foldername(name))[1]=auth.uid()::text);
+DROP POLICY IF EXISTS "Users delete own project videos" ON storage.objects;
+CREATE POLICY "Users delete own project videos" ON storage.objects FOR DELETE TO authenticated USING (bucket_id='project-videos' AND (storage.foldername(name))[1]=auth.uid()::text);
+
+-- Project schema compatibility: the website stores video URL in studio_projects.url and images in image/images.
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS images text[] NOT NULL DEFAULT '{}';
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS character_names text[] NOT NULL DEFAULT '{}';
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS image text NOT NULL DEFAULT '';
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS url text NOT NULL DEFAULT '';
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT '';
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL;
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS by_name text NOT NULL DEFAULT 'Studio member';
+ALTER TABLE public.studio_projects ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE public.studio_projects ENABLE ROW LEVEL SECURITY;
+GRANT SELECT ON public.studio_projects TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.studio_projects TO authenticated;
+
+-- Keep profile photo URL editable by the signed-in owner.
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS avatar text NOT NULL DEFAULT '';
+GRANT UPDATE (avatar) ON public.profiles TO authenticated;
+
+-- ===== END Blackbird-Studio-Media-Storage-Fix.sql =====
