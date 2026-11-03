@@ -1,16 +1,19 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  fetchPublicData, 
-  fetchAdminData, 
-  adminCheckSession, 
-  PublicData, 
-  AdminAllData 
+
+import {
+  fetchPublicData,
+  fetchAdminData,
+  adminCheckSession,
+  PublicData,
+  AdminAllData
 } from './services/api.ts';
+
 import { Navbar } from './components/Navbar.tsx';
 import { Hero } from './components/Hero.tsx';
 import { AboutStudio } from './components/AboutStudio.tsx';
@@ -23,9 +26,35 @@ import { LegalModal } from './components/LegalModals.tsx';
 import { TrackApplicationModal } from './components/TrackApplicationModal.tsx';
 import { AdminLoginModal } from './components/admin/AdminLoginModal.tsx';
 import { AdminPortal } from './components/admin/AdminPortal.tsx';
-import { Loader2, Sparkles } from 'lucide-react';
+
+import MemberRegister from './components/member/MemberRegister.tsx';
+import MemberLogin from './components/member/MemberLogin.tsx';
+
+import { Loader2 } from 'lucide-react';
+
+// ============================================
+// APP ROUTER
+// ============================================
 
 export default function App() {
+  const path = window.location.pathname;
+
+  if (path === '/member/register') {
+    return <MemberRegister />;
+  }
+
+  if (path === '/member/login') {
+    return <MemberLogin />;
+  }
+
+  return <StudioHomeApp />;
+}
+
+// ============================================
+// MAIN STUDIO WEBSITE
+// ============================================
+
+function StudioHomeApp() {
   const [publicData, setPublicData] = useState<PublicData | null>(null);
   const [adminData, setAdminData] = useState<AdminAllData | null>(null);
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
@@ -44,8 +73,10 @@ export default function App() {
       setPublicData(pub);
 
       const session = await adminCheckSession();
+
       if (session.authenticated) {
         setIsAdminLoggedIn(true);
+
         const adm = await fetchAdminData();
         setAdminData(adm);
       } else {
@@ -64,10 +95,13 @@ export default function App() {
 
   const handleAdminLoginSuccess = async () => {
     setIsAdminLoggedIn(true);
+
     try {
       const adm = await fetchAdminData();
+
       setAdminData(adm);
       setIsAdminPortalOpen(true);
+
       await loadData();
     } catch (err) {
       console.error('Error fetching admin data:', err);
@@ -78,32 +112,48 @@ export default function App() {
     setIsAdminLoggedIn(false);
     setIsAdminPortalOpen(false);
     setAdminData(null);
+
     await loadData();
   };
 
   const handleNavigate = (sectionId: string) => {
     setActiveSection(sectionId);
+
     const element = document.getElementById(sectionId);
+
     if (element) {
       element.scrollIntoView({ behavior: 'smooth' });
     }
   };
 
+  // Loading screen
   if (loading || !publicData) {
     return (
       <div className="min-h-screen bg-[#08080a] flex flex-col items-center justify-center text-white">
+
         <div className="relative w-16 h-16 rounded-2xl overflow-hidden border border-amber-500/40 bg-zinc-950 flex items-center justify-center p-2 mb-4 shadow-[0_0_30px_rgba(212,175,55,0.25)] animate-pulse">
-          <span className="font-heading font-black text-amber-400 text-2xl">BB</span>
+          <span className="font-heading font-black text-amber-400 text-2xl">
+            BB
+          </span>
         </div>
+
         <div className="flex items-center gap-2 text-amber-300 font-heading text-sm tracking-widest uppercase">
           <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
           <span>Loading BlackBird Studio...</span>
         </div>
+
       </div>
     );
   }
 
-  const { members, projects, socialLinks, settings, customization } = publicData;
+  const {
+    members,
+    projects,
+    socialLinks,
+    settings,
+    customization
+  } = publicData;
+
   const visible = customization.visibleSections || {
     hero: true,
     story: true,
@@ -115,13 +165,14 @@ export default function App() {
   };
 
   return (
-    <div 
+    <div
       className="min-h-screen text-slate-100 relative selection:bg-[#d4af37] selection:text-black transition-colors duration-500"
-      style={{ 
+      style={{
         backgroundColor: customization.bgColor || '#08080a',
         '--gold-primary': customization.accentColor || '#d4af37'
       } as React.CSSProperties}
     >
+
       {/* Navbar */}
       <Navbar
         settings={settings}
@@ -135,6 +186,7 @@ export default function App() {
 
       {/* Main Sections */}
       <main>
+
         {visible.hero !== false && (
           <Hero
             customization={customization}
@@ -176,6 +228,7 @@ export default function App() {
             settings={settings}
           />
         )}
+
       </main>
 
       {/* Footer */}
@@ -187,13 +240,14 @@ export default function App() {
         onOpenLegal={(type) => setLegalModalType(type)}
       />
 
-      {/* Modals & Dialogs */}
+      {/* Admin Login */}
       <AdminLoginModal
         isOpen={isAdminLoginOpen}
         onClose={() => setIsAdminLoginOpen(false)}
         onLoginSuccess={handleAdminLoginSuccess}
       />
 
+      {/* Admin Dashboard */}
       {isAdminPortalOpen && adminData && (
         <AdminPortal
           data={adminData}
@@ -203,15 +257,18 @@ export default function App() {
         />
       )}
 
+      {/* Application Tracking */}
       <TrackApplicationModal
         isOpen={isTrackAppOpen}
         onClose={() => setIsTrackAppOpen(false)}
       />
 
+      {/* Legal Modal */}
       <LegalModal
         type={legalModalType}
         onClose={() => setLegalModalType(null)}
       />
+
     </div>
   );
 }
