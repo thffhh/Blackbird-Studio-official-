@@ -182,6 +182,27 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* Mobile Actions */}
+          {isMemberLoggedIn ? (
+  <button
+    onClick={onOpenMemberProfile}
+    className="flex items-center gap-2 px-2 py-2 rounded-lg border border-amber-500/40 text-amber-300 text-xs"
+  >
+    {memberAvatar ? (
+      <img src={memberAvatar} alt="" className="w-6 h-6 rounded-full object-cover" />
+    ) : (
+      <UserCircle size={19} />
+    )}
+    Profile
+  </button>
+) : (
+  <button
+    onClick={goToMemberLogin}
+    className="p-2 rounded-lg border border-amber-500/30 text-amber-300"
+    aria-label="Member Login"
+  >
+    <LogIn className="w-5 h-5" />
+  </button>
+)}
           <div className="flex md:hidden items-center gap-2">
             <button
               onClick={goToMemberLogin}
