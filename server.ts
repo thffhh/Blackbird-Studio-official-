@@ -634,6 +634,402 @@ export async function createServer() {
   }
 
   /* =========================================
+     MEMBER AUTHENTICATION MIDDLEWARE
+  ========================================= */
+
+  async function requireMemberAuth(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) {
+    try {
+      const token = getMemberCookie(req);
+
+      if (!token) {
+        return res.status(401).json({
+          error: 'Please log in to continue.'
+        });
+      }
+
+      const tokenHash = hashMemberToken(token);
+
+      const rows = await sql`
+        SELECT
+          a.id,
+          a.full_name,
+          a.email,
+          a.status,
+          a.profile
+        FROM blackbird_member_sessions s
+        JOIN blackbird_member_accounts a
+          ON a.id = s.account_id
+        WHERE s.token_hash = ${tokenHash}
+          AND s.expires_at > NOW()
+        LIMIT 1
+      `;
+
+      if (!rows.length) {
+        clearMemberCookie(res);
+
+        return res.status(401).json({
+          error: 'Your session has expired. Please log in again.'
+        });
+      }
+
+      if (rows[0].status !== 'approved') {
+        await sql`
+          DELETE FROM blackbird_member_sessions
+          WHERE token_hash = ${tokenHash}
+        `;
+
+        clearMemberCookie(res);
+
+        return res.status(403).json({
+          error: 'Your member account is not approved.'
+        });
+      }
+
+      res.locals.memberAccount = rows[0];
+
+      next();
+    } catch (error) {
+      console.error('[BlackBird] Member auth error:', error);
+
+      return res.status(500).json({
+        error: 'Could not verify member session.'
+      });
+    }
+  }
+
+  /* =========================================
+     MEMBER REGISTRATION
+  ========================================= */
+
+  app.post(
+    '/api/members/register',
+    rateLimit('member-register', 5, 60 * 60 * 1000),
+    async (req, res) => {
+      try {
+        const { fullName, email, password } = req.body || {};
+
+        if (
+          typeof fullName !== 'string' ||
+          typeof email !== 'string' ||
+          typeof password !== 'string'
+        ) {
+          return res.status(400).json({
+            error: 'Name, email and password are required.'
+          });
+        }
+
+        const name = fullName.trim();
+        const normalizedEmail = normalizeMemberEmail(email);
+
+        if (name.length < 2 || name.length > 120) {
+          return res.status(400).json({
+            error: 'Name must be between 2 and 120 characters.'
+          });
+        }
+
+        if (!isValidMemberEmail(normalizedEmail)) {
+          return res.status(400).json({
+            error: 'Please enter a valid email address.'
+          });
+        }
+
+        if (password.length < 12 || password.length > 128) {
+          return res.status(400).json({
+            error: 'Password must be between 12 and 128 characters.'
+          });
+        }
+
+        const existing = await sql`
+          SELECT id
+          FROM blackbird_member_accounts
+          WHERE LOWER(email) = ${normalizedEmail}
+          LIMIT 1
+        `;
+
+        if (existing.length) {
+          return res.status(409).json({
+            error: 'An account with this email already exists.'
+          });
+        }
+
+        const passwordHash = bcrypt.hashSync(password, 12);
+
+        const profile = {
+          avatarUrl: '',
+          bio: '',
+          hobbies: '',
+          voiceSpecialties: '',
+          experience: '',
+          portfolio: ''
+        };
+
+        const created = await sql`
+          INSERT INTO blackbird_member_accounts
+            (full_name, email, password_hash, status, profile)
+          VALUES
+            (
+              ${name},
+              ${normalizedEmail},
+              ${passwordHash},
+              'pending',
+              ${JSON.stringify(profile)}::jsonb
+            )
+          RETURNING id, full_name, email, status, created_at
+        `;
+
+        return res.status(201).json({
+          success: true,
+          message: 'Registration submitted. Please wait for admin approval.',
+          account: created[0]
+        });
+
+      } catch (error: any) {
+        if (error?.code === '23505') {
+          return res.status(409).json({
+            error: 'An account with this email already exists.'
+          });
+        }
+
+        console.error('[BlackBird] Registration error:', error);
+
+        return res.status(500).json({
+          error: 'Registration failed. Please try again.'
+        });
+      }
+    }
+  );
+
+  /* =========================================
+     MEMBER LOGIN
+  ========================================= */
+
+  app.post(
+    '/api/members/login',
+    rateLimit('member-login', 5, 15 * 60 * 1000),
+    async (req, res) => {
+      try {
+        const { email, password } = req.body || {};
+
+        if (
+          typeof email !== 'string' ||
+          typeof password !== 'string'
+        ) {
+          return res.status(400).json({
+            error: 'Email and password are required.'
+          });
+        }
+
+        const normalizedEmail = normalizeMemberEmail(email);
+
+        const rows = await sql`
+          SELECT id, full_name, email, password_hash, status, profile
+          FROM blackbird_member_accounts
+          WHERE LOWER(email) = ${normalizedEmail}
+          LIMIT 1
+        `;
+
+        if (
+          !rows.length ||
+          !bcrypt.compareSync(password, rows[0].password_hash)
+        ) {
+          return res.status(401).json({
+            error: 'Invalid email or password.'
+          });
+        }
+
+        const account = rows[0];
+
+        if (account.status === 'pending') {
+          return res.status(403).json({
+            error: 'Your account is waiting for admin approval.'
+          });
+        }
+
+        if (account.status === 'rejected') {
+          return res.status(403).json({
+            error: 'Your registration was not approved.'
+          });
+        }
+
+        if (account.status === 'suspended') {
+          return res.status(403).json({
+            error: 'Your account has been suspended.'
+          });
+        }
+
+        const token = generateToken();
+        const tokenHash = hashMemberToken(token);
+
+        await sql`
+          DELETE FROM blackbird_member_sessions
+          WHERE expires_at <= NOW()
+        `;
+
+        await sql`
+          INSERT INTO blackbird_member_sessions
+            (token_hash, account_id, expires_at)
+          VALUES
+            (
+              ${tokenHash},
+              ${account.id},
+              NOW() + INTERVAL '30 days'
+            )
+        `;
+
+        setMemberCookie(res, token);
+
+        return res.json({
+          success: true,
+          message: 'Login successful.',
+          user: {
+            id: account.id,
+            fullName: account.full_name,
+            email: account.email,
+            profile: account.profile
+          }
+        });
+
+      } catch (error) {
+        console.error('[BlackBird] Member login error:', error);
+
+        return res.status(500).json({
+          error: 'Login failed. Please try again.'
+        });
+      }
+    }
+  );
+
+  /* =========================================
+     MEMBER SESSION / PROFILE
+  ========================================= */
+
+  app.get(
+    '/api/members/me',
+    requireMemberAuth,
+    (_req, res) => {
+      const account = res.locals.memberAccount;
+
+      res.setHeader('Cache-Control', 'no-store');
+
+      return res.json({
+        authenticated: true,
+        user: {
+          id: account.id,
+          fullName: account.full_name,
+          email: account.email,
+          status: account.status,
+          profile: account.profile
+        }
+      });
+    }
+  );
+
+  /* =========================================
+     UPDATE MEMBER PROFILE
+  ========================================= */
+
+  app.patch(
+    '/api/members/me',
+    requireMemberAuth,
+    async (req, res) => {
+      try {
+        const account = res.locals.memberAccount;
+        const update = req.body || {};
+
+        const allowed = [
+          'avatarUrl',
+          'bio',
+          'hobbies',
+          'voiceSpecialties',
+          'experience',
+          'portfolio'
+        ];
+
+        const profile = {
+          ...(account.profile || {})
+        };
+
+        for (const key of allowed) {
+          if (update[key] !== undefined) {
+            if (
+              typeof update[key] !== 'string' ||
+              update[key].length > 5000
+            ) {
+              return res.status(400).json({
+                error: `Invalid profile field: ${key}`
+              });
+            }
+
+            profile[key] = update[key].trim();
+          }
+        }
+
+        await sql`
+          UPDATE blackbird_member_accounts
+          SET profile = ${JSON.stringify(profile)}::jsonb,
+              updated_at = NOW()
+          WHERE id = ${account.id}
+        `;
+
+        return res.json({
+          success: true,
+          message: 'Profile updated successfully.',
+          profile
+        });
+
+      } catch (error) {
+        console.error('[BlackBird] Profile update error:', error);
+
+        return res.status(500).json({
+          error: 'Could not update profile.'
+        });
+      }
+    }
+  );
+
+  /* =========================================
+     MEMBER LOGOUT
+  ========================================= */
+
+  app.post(
+    '/api/members/logout',
+    async (req, res) => {
+      try {
+        const token = getMemberCookie(req);
+
+        if (token) {
+          const tokenHash = hashMemberToken(token);
+
+          await sql`
+            DELETE FROM blackbird_member_sessions
+            WHERE token_hash = ${tokenHash}
+          `;
+        }
+
+        clearMemberCookie(res);
+
+        return res.json({
+          success: true,
+          message: 'Logged out successfully.'
+        });
+
+      } catch (error) {
+        console.error('[BlackBird] Member logout error:', error);
+
+        clearMemberCookie(res);
+
+        return res.status(500).json({
+          error: 'Logout could not be completed.'
+        });
+      }
+    }
+  );
+
+  /* =========================================
      PUBLIC WEBSITE DATA
   ========================================= */
 
