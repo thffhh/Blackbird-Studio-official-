@@ -139,13 +139,20 @@ if (!SUPABASE_URL || !SUPABASE_SECRET) {
   );
 }
 
+
 const supabase = createClient(
   SUPABASE_URL,
   SUPABASE_SECRET,
   {
     auth: {
       persistSession: false,
-      autoRefreshToken: false
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    },
+    global: {
+      headers: {
+        'X-Client-Info': 'blackbird-studio-server'
+      }
     }
   }
 );
