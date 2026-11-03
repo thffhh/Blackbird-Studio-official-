@@ -1,481 +1,462 @@
-import React, { useState } from 'react';
-import { Member, Rank, OFFICIAL_RANKS } from '../../../types/index.ts';
-import { getRankBadgeStyle } from '../../../utils/ranks.ts';
-import { uploadMedia } from '../../../services/api.ts';
-import { 
-  Users, 
-  UserPlus, 
-  Edit3, 
-  Trash2, 
-  Check, 
-  X, 
-  Upload, 
-  Calendar, 
-  Search, 
-  Loader2,
-  Power
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Check,
+  X,
+  Search,
+  RefreshCw,
+  UserRound,
+  AlertCircle,
+  Save
 } from 'lucide-react';
 
-interface MembersSectionAdminProps {
-  members: Member[];
-  onSaveMember: (member: Partial<Member>) => Promise<void>;
-  onDeleteMember: (id: string) => Promise<void>;
+import {
+  fetchMemberAccounts,
+  adminUpdateMemberAccountStatus,
+  adminUpdateMemberAccountProfile,
+  adminUpdateMemberAccountRank
+} from '../../../services/api.ts';
+
+import {
+  OFFICIAL_RANKS
+} from '../../../types/index.ts';
+
+import type {
+  MemberAccount,
+  MemberAccountStatus,
+  Rank
+} from '../../../types/index.ts';
+
+interface Props {
+  onRefreshData: () => Promise<void>;
 }
 
-export const MembersSectionAdmin: React.FC<MembersSectionAdminProps> = ({
-  members,
-  onSaveMember,
-  onDeleteMember
+type FilterStatus = 'all' | MemberAccountStatus;
+
+const statusLabels: Record<MemberAccountStatus, string> = {
+  pending: 'Pending',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  suspended: 'Suspended'
+};
+
+export const MemberAccountsAdmin: React.FC<Props> = ({
+  onRefreshData
 }) => {
+  const [accounts, setAccounts] = useState<MemberAccount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
-  const [filterRank, setFilterRank] = useState<string>('ALL');
-  const [isEditing, setIsEditing] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [uploadingImage, setUploadingImage] = useState(false);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FilterStatus>('all');
+  const [selected, setSelected] = useState<MemberAccount | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
-  // Form State
-  const [id, setId] = useState<string | undefined>(undefined);
-  const [name, setName] = useState('');
-  const [rank, setRank] = useState<Rank>('D');
-  const [avatarUrl, setAvatarUrl] = useState('');
-  const [hobbies, setHobbies] = useState('');
-  const [bio, setBio] = useState('');
-  const [joiningDate, setJoiningDate] = useState('');
-  const [isActive, setIsActive] = useState(true);
-  const [formError, setFormError] = useState('');
-
-  const filtered = members.filter((m) => {
-    if (filterRank !== 'ALL' && m.rank !== filterRank) return false;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      return m.name.toLowerCase().includes(q) || m.hobbies.toLowerCase().includes(q);
-    }
-    return true;
+  const [draft, setDraft] = useState({
+    fullName: '',
+    avatarUrl: '',
+    bio: '',
+    hobbies: '',
+    facebookLink: '',
+    rank: 'D' as Rank
   });
 
-  const handleOpenAdd = () => {
-    setId(undefined);
-    setName('');
-    setRank('D');
-    setAvatarUrl('https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80');
-    setHobbies('');
-    setBio('');
-    setJoiningDate(new Date().toISOString().split('T')[0]);
-    setIsActive(true);
-    setFormError('');
-    setIsEditing(true);
-  };
-
-  const handleOpenEdit = (m: Member) => {
-    setId(m.id);
-    setName(m.name);
-    setRank(m.rank);
-    setAvatarUrl(m.avatarUrl);
-    setHobbies(m.hobbies);
-    setBio(m.bio);
-    setJoiningDate(m.joiningDate);
-    setIsActive(m.isActive);
-    setFormError('');
-    setIsEditing(true);
-  };
-
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const loadAccounts = async () => {
+    setLoading(true);
+    setError('');
 
     try {
-      setUploadingImage(true);
-      const res = await uploadMedia(file);
-      setAvatarUrl(res.url);
-    } catch (err: any) {
-      setFormError(err.message || 'Image upload failed.');
-    } finally {
-      setUploadingImage(false);
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) {
-      setFormError('Member name is required.');
-      return;
-    }
-    if (!avatarUrl.trim()) {
-      setFormError('Profile picture URL or upload is required.');
-    }
-
-    try {
-      setLoading(true);
-      await onSaveMember({
-        id,
-        name: name.trim(),
-        rank,
-        avatarUrl: avatarUrl.trim(),
-        hobbies: hobbies.trim(),
-        bio: bio.trim(),
-        joiningDate,
-        isActive
-      });
-      setIsEditing(false);
-    } catch (err: any) {
-      setFormError(err.message || 'Failed to save member.');
+      const result = await fetchMemberAccounts();
+      setAccounts(result.accounts || []);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to load member accounts.'
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  const handleToggleActive = async (m: Member) => {
+  useEffect(() => {
+    void loadAccounts();
+  }, []);
+
+  const counts = useMemo(() => ({
+    all: accounts.length,
+    pending: accounts.filter(a => a.status === 'pending').length,
+    approved: accounts.filter(a => a.status === 'approved').length,
+    rejected: accounts.filter(a => a.status === 'rejected').length,
+    suspended: accounts.filter(a => a.status === 'suspended').length
+  }), [accounts]);
+
+  const filteredAccounts = useMemo(() => {
+    const term = search.trim().toLowerCase();
+
+    return accounts.filter(account => {
+      const matchesStatus =
+        filter === 'all' || account.status === filter;
+
+      const matchesSearch =
+        !term ||
+        account.full_name.toLowerCase().includes(term) ||
+        account.email.toLowerCase().includes(term);
+
+      return matchesStatus && matchesSearch;
+    });
+  }, [accounts, filter, search]);
+
+  const openEditor = (account: MemberAccount) => {
+    setSelected(account);
+
+    setDraft({
+      fullName: account.full_name || '',
+      avatarUrl: account.profile?.avatarUrl || '',
+      bio: account.profile?.bio || '',
+      hobbies: account.profile?.hobbies || '',
+      facebookLink: account.profile?.facebookLink || '',
+      rank: account.profile?.rank || 'D'
+    });
+  };
+
+  const changeStatus = async (
+    account: MemberAccount,
+    status: MemberAccountStatus
+  ) => {
+    const confirmation = window.confirm(
+      `Are you sure you want to change ${account.full_name} to ${statusLabels[status]}?`
+    );
+
+    if (!confirmation) return;
+
+    setBusy(true);
+    setError('');
+    setNotice('');
+
     try {
-      await onSaveMember({
-        id: m.id,
-        isActive: !m.isActive
-      });
-    } catch (err: any) {
-      alert(err.message || 'Failed to update member status.');
+      await adminUpdateMemberAccountStatus(
+        account.id,
+        status,
+        ''
+      );
+
+      await loadAccounts();
+      await onRefreshData();
+
+      setNotice('Member account status updated.');
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Status update failed.'
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveProfile = async () => {
+    if (!selected) return;
+
+    if (draft.fullName.trim().length < 2) {
+      setError('Name must contain at least 2 characters.');
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+    setNotice('');
+
+    try {
+      await adminUpdateMemberAccountProfile(
+        selected.id,
+        {
+          fullName: draft.fullName.trim(),
+          avatarUrl: draft.avatarUrl.trim(),
+          bio: draft.bio.trim(),
+          hobbies: draft.hobbies.trim(),
+          facebookLink: draft.facebookLink.trim()
+        }
+      );
+
+      await adminUpdateMemberAccountRank(
+        selected.id,
+        draft.rank
+      );
+
+      setSelected(null);
+
+      await loadAccounts();
+      await onRefreshData();
+
+      setNotice('Member profile and rank updated.');
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Profile update failed.'
+      );
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <div className="space-y-6">
-      
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
+    <section className="space-y-6">
+
+      <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl sm:text-2xl font-heading font-black text-white uppercase tracking-wider">
-            Voice Artist Roster Management
+          <p className="text-xs uppercase tracking-widest text-amber-400">
+            BlackBird Studio
+          </p>
+
+          <h2 className="text-3xl font-bold text-white">
+            Member Accounts
           </h2>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            Manage public team profiles, ranks, bio information, and activation status.
+
+          <p className="text-sm text-zinc-400 mt-2">
+            Manage registrations, approvals and member profiles.
           </p>
         </div>
+
         <button
-          onClick={handleOpenAdd}
-          className="px-4 py-2.5 rounded-xl bg-amber-500 text-black font-semibold text-xs uppercase tracking-wider hover:brightness-110 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer shadow-[0_0_15px_rgba(212,175,55,0.25)]"
+          onClick={() => void loadAccounts()}
+          disabled={loading}
+          className="flex items-center gap-2 rounded-xl border border-zinc-700 px-4 py-2 text-white"
         >
-          <UserPlus className="w-4 h-4" />
-          <span>Add New Member</span>
+          <RefreshCw size={16} />
+          Refresh
         </button>
-      </div>
+      </header>
 
-      {/* Filter / Search Bar */}
-      <div className="flex flex-col sm:flex-row items-center gap-3 justify-between">
-        <div className="relative w-full sm:w-72">
-          <Search className="w-4 h-4 text-zinc-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name or skills..."
-            className="w-full pl-10 pr-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto scrollbar-none">
-          <select
-            value={filterRank}
-            onChange={(e) => setFilterRank(e.target.value)}
-            className="px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 focus:outline-none focus:border-amber-400 cursor-pointer"
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {(['all', 'pending', 'approved', 'rejected', 'suspended'] as const).map(key => (
+          <button
+            key={key}
+            onClick={() => setFilter(key)}
+            className={`rounded-xl border p-4 text-left ${
+              filter === key
+                ? 'border-amber-500 bg-amber-500/10'
+                : 'border-zinc-800 bg-zinc-900'
+            }`}
           >
-            <option value="ALL">All Ranks ({members.length})</option>
-            {OFFICIAL_RANKS.map((r) => (
-              <option key={r} value={r}>
-                Rank {r} ({members.filter((m) => m.rank === r).length})
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Member Table */}
-      <div className="rounded-2xl bg-[#101015] border border-zinc-800 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-zinc-900/80 text-zinc-400 uppercase tracking-wider border-b border-zinc-800">
-              <tr>
-                <th className="py-3 px-4">Order</th>
-                <th className="py-3 px-4">Artist</th>
-                <th className="py-3 px-4">Rank</th>
-                <th className="py-3 px-4">Joining Date</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
-              {filtered.map((m) => {
-                const rankStyle = getRankBadgeStyle(m.rank);
-                return (
-                  <tr key={m.id} className="hover:bg-zinc-900/40">
-                    <td className="py-3 px-4 font-mono text-zinc-400 font-semibold">
-                      #{m.displayOrder}
-                    </td>
-                    <td className="py-3 px-4 flex items-center gap-3">
-                      <img
-                        src={m.avatarUrl}
-                        alt={m.name}
-                        className="w-9 h-9 rounded-full object-cover border border-amber-500/30 shrink-0"
-                      />
-                      <div className="min-w-0">
-                        <div className="font-bold text-white truncate">{m.name}</div>
-                        <div className="text-[11px] text-zinc-400 truncate max-w-xs">{m.hobbies}</div>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold border uppercase tracking-wider ${rankStyle.bg} ${rankStyle.text} ${rankStyle.border}`}>
-                        Rank {m.rank}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-zinc-400">
-                      {m.joiningDate}
-                    </td>
-                    <td className="py-3 px-4">
-                      <button
-                        onClick={() => handleToggleActive(m)}
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-colors cursor-pointer flex items-center gap-1 ${
-                          m.isActive
-                            ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/40'
-                            : 'bg-zinc-800 text-zinc-500 border border-zinc-700'
-                        }`}
-                        title="Click to toggle public visibility"
-                      >
-                        <Power className="w-3 h-3" />
-                        <span>{m.isActive ? 'Active (Live)' : 'Deactivated'}</span>
-                      </button>
-                    </td>
-                    <td className="py-3 px-4 text-right whitespace-nowrap space-x-2">
-                      <button
-                        onClick={() => handleOpenEdit(m)}
-                        className="p-1.5 rounded-lg bg-zinc-800 text-amber-300 hover:bg-amber-500 hover:text-black transition-colors cursor-pointer"
-                        title="Edit member details"
-                      >
-                        <Edit3 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => setDeleteConfirmId(m.id)}
-                        className="p-1.5 rounded-lg bg-zinc-800 text-rose-400 hover:bg-rose-600 hover:text-white transition-colors cursor-pointer"
-                        title="Remove member"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Delete Confirmation Modal */}
-      {deleteConfirmId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-sm bg-[#121218] border border-rose-500/50 rounded-2xl p-6 text-center shadow-xl">
-            <Trash2 className="w-10 h-10 text-rose-500 mx-auto mb-3" />
-            <h3 className="text-lg font-heading font-bold text-white mb-2">Remove Member?</h3>
-            <p className="text-xs text-zinc-400 mb-6">
-              Are you sure you want to delete this voice artist? This will permanently remove them from the studio roster.
+            <p className="text-xs uppercase text-zinc-400">
+              {key}
             </p>
-            <div className="flex gap-3 justify-center">
-              <button
-                onClick={() => setDeleteConfirmId(null)}
-                className="px-4 py-2 rounded-lg bg-zinc-800 text-zinc-300 text-xs font-semibold hover:bg-zinc-700 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  await onDeleteMember(deleteConfirmId);
-                  setDeleteConfirmId(null);
-                }}
-                className="px-4 py-2 rounded-lg bg-rose-600 text-white text-xs font-semibold hover:bg-rose-500 cursor-pointer"
-              >
-                Confirm Delete
-              </button>
-            </div>
-          </div>
+
+            <p className="text-2xl font-bold text-white mt-1">
+              {counts[key]}
+            </p>
+          </button>
+        ))}
+      </div>
+
+      {error && (
+        <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3 text-red-300 flex gap-2">
+          <AlertCircle size={18} />
+          {error}
         </div>
       )}
 
-      {/* Edit / Add Member Modal */}
-      {isEditing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn">
-          <div className="relative w-full max-w-2xl bg-[#0f0f14] border border-amber-500/50 rounded-2xl p-6 sm:p-8 shadow-[0_0_50px_rgba(212,175,55,0.25)] max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between pb-4 border-b border-zinc-800 mb-6">
-              <h3 className="text-xl font-heading font-black text-white uppercase tracking-wider">
-                {id ? 'Edit Voice Member' : 'Add New Voice Member'}
-              </h3>
-              <button
-                onClick={() => setIsEditing(false)}
-                className="p-1 text-zinc-400 hover:text-white rounded-full hover:bg-zinc-800 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {notice && (
+        <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 p-3 text-emerald-300">
+          {notice}
+        </div>
+      )}
 
-            {formError && (
-              <div className="mb-4 p-3 rounded-xl bg-rose-950/40 border border-rose-500/50 text-rose-300 text-xs">
-                {formError}
-              </div>
-            )}
+      <div className="relative">
+        <Search
+          size={17}
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+        />
 
-            <form onSubmit={handleSubmit} className="overflow-y-auto space-y-5 pr-2">
-              
-              {/* Picture Upload & Preview */}
-              <div className="flex items-center gap-5">
-                <div className="relative w-24 h-24 rounded-2xl overflow-hidden border-2 border-amber-500/40 bg-zinc-900 shrink-0">
-                  <img
-                    src={avatarUrl}
-                    alt={name || 'Avatar'}
-                    className="w-full h-full object-cover"
-                  />
-                  {uploadingImage && (
-                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center text-amber-400">
-                      <Loader2 className="w-6 h-6 animate-spin" />
-                    </div>
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search members..."
+          className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 pl-10 text-white"
+        />
+      </div>
+
+      <div className="rounded-2xl border border-zinc-800 overflow-hidden">
+        {loading ? (
+          <p className="p-8 text-center text-zinc-400">
+            Loading accounts...
+          </p>
+        ) : filteredAccounts.length === 0 ? (
+          <p className="p-8 text-center text-zinc-400">
+            No accounts found.
+          </p>
+        ) : (
+          filteredAccounts.map(account => (
+            <article
+              key={account.id}
+              className="border-b border-zinc-800 last:border-0 p-4 flex flex-col lg:flex-row lg:items-center gap-4"
+            >
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <div className="w-12 h-12 rounded-full overflow-hidden bg-zinc-800 flex items-center justify-center">
+                  {account.profile?.avatarUrl ? (
+                    <img
+                      src={account.profile.avatarUrl}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <UserRound className="text-zinc-400" />
                   )}
                 </div>
 
-                <div className="flex-1 space-y-2">
-                  <label className="text-xs uppercase tracking-wider font-semibold text-zinc-300 block">
-                    Profile Picture Upload / Replace
-                  </label>
-                  <div className="flex items-center gap-3">
-                    <label className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-amber-300 font-semibold cursor-pointer border border-zinc-700 flex items-center gap-1.5 transition-colors">
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>Upload from Device</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={handleImageUpload}
-                        className="hidden"
-                      />
-                    </label>
-                    <span className="text-[11px] text-zinc-500">or paste image URL below</span>
-                  </div>
-                  <input
-                    type="url"
-                    value={avatarUrl}
-                    onChange={(e) => setAvatarUrl(e.target.value)}
-                    placeholder="https://images.unsplash.com/..."
-                    className="w-full px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-400"
-                  />
+                <div className="min-w-0">
+                  <p className="font-semibold text-white">
+                    {account.full_name}
+                  </p>
+
+                  <p className="text-xs text-zinc-400 break-all">
+                    {account.email}
+                  </p>
+
+                  <p className="text-xs text-zinc-500 mt-1">
+                    Rank: {account.profile?.rank || 'D'}
+                  </p>
                 </div>
               </div>
 
-              {/* Name & Official Rank */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs uppercase tracking-wider font-semibold text-zinc-300 mb-1.5 block">
-                    Full Name / Stage Name *
-                  </label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    required
-                    placeholder="e.g. Tanim Iqbal Sifat"
-                    className="w-full px-3.5 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-400"
-                  />
-                </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full border border-zinc-700 px-3 py-1 text-xs text-zinc-300">
+                  {statusLabels[account.status]}
+                </span>
 
-                <div>
-                  <label className="text-xs uppercase tracking-wider font-semibold text-zinc-300 mb-1.5 block">
-                    Official Rank (Strict 9 Ranks) *
-                  </label>
-                  <select
-                    value={rank}
-                    onChange={(e) => setRank(e.target.value as Rank)}
-                    className="w-full px-3.5 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-400 cursor-pointer"
+                <button
+                  onClick={() => openEditor(account)}
+                  className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-white"
+                >
+                  Edit Profile
+                </button>
+
+                {account.status !== 'approved' && (
+                  <button
+                    disabled={busy}
+                    onClick={() => void changeStatus(account, 'approved')}
+                    className="rounded-lg bg-emerald-600 px-3 py-2 text-xs text-white disabled:opacity-50"
                   >
-                    {OFFICIAL_RANKS.map((r) => (
-                      <option key={r} value={r}>
-                        Rank {r} — {getRankBadgeStyle(r).description}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+                    <Check size={13} className="inline mr-1" />
+                    Approve
+                  </button>
+                )}
 
-              {/* Joining Date & Active Status */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs uppercase tracking-wider font-semibold text-zinc-300 mb-1.5 block">
-                    Joining Date (YYYY-MM-DD)
-                  </label>
-                  <input
-                    type="date"
-                    value={joiningDate}
-                    onChange={(e) => setJoiningDate(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-400"
+                {account.status !== 'rejected' && (
+                  <button
+                    disabled={busy}
+                    onClick={() => void changeStatus(account, 'rejected')}
+                    className="rounded-lg border border-red-500/40 px-3 py-2 text-xs text-red-300 disabled:opacity-50"
+                  >
+                    <X size={13} className="inline mr-1" />
+                    Reject
+                  </button>
+                )}
+
+                {account.status === 'approved' && (
+                  <button
+                    disabled={busy}
+                    onClick={() => void changeStatus(account, 'suspended')}
+                    className="rounded-lg border border-orange-500/40 px-3 py-2 text-xs text-orange-300 disabled:opacity-50"
+                  >
+                    Suspend
+                  </button>
+                )}
+
+                {account.status === 'suspended' && (
+                  <button
+                    disabled={busy}
+                    onClick={() => void changeStatus(account, 'approved')}
+                    className="rounded-lg bg-emerald-600 px-3 py-2 text-xs text-white disabled:opacity-50"
+                  >
+                    Reactivate
+                  </button>
+                )}
+              </div>
+            </article>
+          ))
+        )}
+      </div>
+
+      {selected && (
+        <div className="fixed inset-0 z-[100] bg-black/80 p-4 overflow-y-auto flex items-center justify-center">
+          <div className="w-full max-w-xl rounded-2xl border border-zinc-700 bg-[#111116] p-6 space-y-4">
+
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-bold text-white">
+                Edit Member Profile
+              </h3>
+
+              <button onClick={() => setSelected(null)}>
+                <X className="text-zinc-400" />
+              </button>
+            </div>
+
+            {([
+              ['fullName', 'Full Name'],
+              ['avatarUrl', 'Profile Picture URL'],
+              ['bio', 'About / Bio'],
+              ['hobbies', 'Hobbies'],
+              ['facebookLink', 'Facebook Profile Link']
+            ] as const).map(([key, label]) => (
+              <label key={key} className="block text-sm text-zinc-400">
+                {label}
+
+                {key === 'bio' ? (
+                  <textarea
+                    value={draft[key]}
+                    onChange={e => setDraft({...draft, [key]: e.target.value})}
+                    rows={3}
+                    className="mt-1 w-full rounded-lg border border-zinc-700 bg-black p-3 text-white"
                   />
-                </div>
+                ) : (
+                  <input
+                    value={draft[key]}
+                    onChange={e => setDraft({...draft, [key]: e.target.value})}
+                    className="mt-1 w-full rounded-lg border border-zinc-700 bg-black p-3 text-white"
+                  />
+                )}
+              </label>
+            ))}
 
-                <div className="flex items-center pt-6">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={isActive}
-                      onChange={(e) => setIsActive(e.target.checked)}
-                      className="w-4 h-4 rounded border-zinc-700 bg-zinc-900 text-amber-500 focus:ring-amber-500/40"
-                    />
-                    <span className="text-xs text-zinc-200">
-                      Active Member (Visible in Public Gallery)
-                    </span>
-                  </label>
-                </div>
-              </div>
+            <label className="block text-sm text-zinc-400">
+              Official Rank
 
-              {/* Hobbies */}
-              <div>
-                <label className="text-xs uppercase tracking-wider font-semibold text-zinc-300 mb-1.5 block">
-                  Hobbies & Voice Specialties
-                </label>
-                <input
-                  type="text"
-                  value={hobbies}
-                  onChange={(e) => setHobbies(e.target.value)}
-                  placeholder="e.g. Shonen battle cries, baritone voices, anime sound direction"
-                  className="w-full px-3.5 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-400"
-                />
-              </div>
+              <select
+                value={draft.rank}
+                onChange={e => setDraft({...draft, rank: e.target.value as Rank})}
+                className="mt-1 w-full rounded-lg border border-zinc-700 bg-black p-3 text-white"
+              >
+                {OFFICIAL_RANKS.map(rank => (
+                  <option key={rank} value={rank}>
+                    {rank}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-              {/* Biography */}
-              <div>
-                <label className="text-xs uppercase tracking-wider font-semibold text-zinc-300 mb-1.5 block">
-                  Artist Biography
-                </label>
-                <textarea
-                  rows={4}
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  placeholder="Detailed artist biography, anime roles voiced, background..."
-                  className="w-full px-3.5 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-400 resize-none"
-                />
-              </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setSelected(null)}
+                className="rounded-lg border border-zinc-700 px-4 py-2 text-zinc-300"
+              >
+                Cancel
+              </button>
 
-              <div className="pt-4 border-t border-zinc-800 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsEditing(false)}
-                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 font-semibold cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="px-6 py-2 rounded-xl bg-amber-500 text-black text-xs font-bold uppercase tracking-wider hover:brightness-110 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
-                >
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span>Save Member Details</span>
-                </button>
-              </div>
-
-            </form>
+              <button
+                disabled={busy}
+                onClick={() => void saveProfile()}
+                className="rounded-lg bg-amber-500 px-4 py-2 font-bold text-black disabled:opacity-50"
+              >
+                <Save size={15} className="inline mr-1" />
+                Save Changes
+              </button>
+            </div>
           </div>
         </div>
       )}
-
-    </div>
+    </section>
   );
 };
