@@ -559,13 +559,22 @@ export interface AdminMemberRankUpdate {
    ADMIN MEMBER ACCOUNT MANAGEMENT
 ========================================= */
 
-export async function fetchMemberAccounts() {
+export async function adminLinkMemberAccountToRoster(
+  accountId: string,
+  memberId: string
+) {
   return memberApiRequest<{
     success: boolean;
-    accounts: MemberAccount[];
-  }>('/api/admin/member-accounts', {
-    headers: getAuthHeaders()
-  });
+    message: string;
+    account?: MemberAccount;
+  }>(
+    `/api/admin/member-accounts/${encodeURIComponent(accountId)}/link-roster`,
+    {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ memberId })
+    }
+  );
 }
 /* =========================================
    ADMIN APPROVE / REJECT / SUSPEND
