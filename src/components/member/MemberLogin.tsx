@@ -30,7 +30,7 @@ export default function MemberLogin() {
       });
 
       // The backend creates a secure HttpOnly session cookie.
-      window.location.href = '/member/dashboard';
+      window.location.href = '/';
     } catch (err) {
       setError(
         err instanceof Error
