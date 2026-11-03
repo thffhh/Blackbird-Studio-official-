@@ -7,6 +7,143 @@ import {
   WebsiteCustomization 
 } from '../types/index.ts';
 
+/* =========================================
+   MEMBER ACCOUNT APIs
+   Separate from public member roster
+========================================= */
+
+async function memberApiRequest<T>(
+  url: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const res = await fetch(url, {
+    ...options,
+    credentials: 'same-origin',
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...options.headers
+    }
+  });
+
+  const json = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(json.error || json.message || 'Member request failed');
+  }
+
+  return json as T;
+}
+
+/* Registration */
+
+export async function memberRegister(
+  data: MemberRegistrationData
+) {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+    account?: MemberAccount;
+  }>('/api/members/register', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  });
+}
+
+/* Login */
+
+export async function memberLogin(
+  data: MemberLoginData
+) {
+  return memberApiRequest<{
+    success: boolean;
+    message?: string;
+    status?: MemberAccountStatus;
+    account?: MemberAccount;
+  }>('/api/members/login', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  });
+}
+
+/* Current member session */
+
+export async function fetchMemberSession() {
+  return memberApiRequest<{
+    success: boolean;
+    account: MemberAccount;
+  }>('/api/members/me');
+}
+
+/* Update member profile */
+
+export async function updateMemberProfile(
+  updates: MemberProfileUpdate
+) {
+  return memberApiRequest<{
+    success: boolean;
+    account: MemberAccount;
+  }>('/api/members/me', {
+    method: 'PATCH',
+    body: JSON.stringify(updates)
+  });
+}
+
+/* Logout */
+
+export async function memberLogout() {
+  return memberApiRequest<{
+    success: boolean;
+    message?: string;
+  }>('/api/members/logout', {
+    method: 'POST'
+  });
+}
+
+
+/* =========================================
+   ADMIN: MEMBER ACCOUNT MANAGEMENT
+========================================= */
+
+export async function fetchMemberAccounts() {
+  return memberApiRequest<{
+    success: boolean;
+    accounts: MemberAccount[];
+  }>('/api/admin/member-accounts', {
+    headers: getAuthHeaders()
+  });
+}
+
+export async function adminUpdateMemberAccountStatus(
+  id: string,
+  status: 'approved' | 'rejected' | 'suspended',
+  reason = ''
+) {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+    account: MemberAccount;
+  }>(`/api/admin/member-accounts/${encodeURIComponent(id)}/status`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ status, reason })
+  });
+}
+
+export async function adminDeleteMemberAccount(id: string) {
+  return memberApiRequest<{
+    success: boolean;
+    message: string;
+    account: {
+      id: string;
+      full_name: string;
+      email: string;
+    };
+  }>(`/api/admin/member-accounts/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders()
+  });
+}
+
 const TOKEN_KEY = 'bbs_admin_token';
 
 export const authStorage = {
