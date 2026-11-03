@@ -1,4 +1,3 @@
-
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'node:path';
@@ -139,7 +138,6 @@ if (!SUPABASE_URL || !SUPABASE_SECRET) {
   );
 }
 
-
 const supabase = createClient(
   SUPABASE_URL,
   SUPABASE_SECRET,
@@ -269,7 +267,10 @@ async function initializeDatabase(): Promise<void> {
 
     database = parsed as DatabaseSchema;
 
-    console.log('[BlackBird] Existing database loaded successfully.');
+    console.log(
+      '[BlackBird] Existing database loaded successfully.'
+    );
+
     return;
   }
 
@@ -279,19 +280,26 @@ async function initializeDatabase(): Promise<void> {
 }
 
 /* =========================================
-   AUTHENTICATION AND RATE LIMITING
+   AUTHENTICATION CONFIGURATION
 ========================================= */
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-
-/* =========================================
-   MEMBER AUTHENTICATION CONFIGURATION
-========================================= */
 
 const MEMBER_SESSION_TTL_MS =
   30 * 24 * 60 * 60 * 1000;
 
 const MEMBER_COOKIE_NAME = 'bbs_member_session';
+
+const activeSessions = new Map<string, number>();
+
+const rateBuckets = new Map<
+  string,
+  { count: number; resetAt: number }
+>();
+
+/* =========================================
+   MEMBER AUTHENTICATION HELPERS
+========================================= */
 
 function hashMemberToken(token: string): string {
   return crypto
@@ -357,17 +365,13 @@ function clearMemberCookie(res: Response): void {
   );
 }
 
-
-const activeSessions = new Map<string, number>();
-
-const rateBuckets = new Map<
-  string,
-  { count: number; resetAt: number }
->();
-
 function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
+
+/* =========================================
+   RATE LIMITING
+========================================= */
 
 function rateLimit(
   prefix: string,
@@ -563,10 +567,6 @@ export async function createServer() {
         );
       }
 
-      /*
-       * Wait for queued database writes before sending JSON.
-       */
-
       const originalJson = res.json.bind(res);
 
       res.json = ((body: any) => {
@@ -701,6 +701,7 @@ export async function createServer() {
     }
   }
 
+  
   /* =========================================
      MEMBER REGISTRATION
   ========================================= */
@@ -762,9 +763,8 @@ export async function createServer() {
           avatarUrl: '',
           bio: '',
           hobbies: '',
-          voiceSpecialties: '',
-          experience: '',
-          portfolio: ''
+          facebookLink: '',
+          rank: 'D'
         };
 
         const created = await sql`
@@ -929,7 +929,8 @@ export async function createServer() {
   );
 
   /* =========================================
-     UPDATE MEMBER PROFILE
+     MEMBER PROFILE UPDATE
+     Members cannot change their own rank.
   ========================================= */
 
   app.patch(
@@ -941,44 +942,118 @@ export async function createServer() {
         const update = req.body || {};
 
         const allowed = [
+          'fullName',
           'avatarUrl',
           'bio',
           'hobbies',
-          'voiceSpecialties',
-          'experience',
-          'portfolio'
+          'facebookLink'
         ];
 
         const profile = {
           ...(account.profile || {})
         };
 
-        for (const key of allowed) {
-          if (update[key] !== undefined) {
-            if (
-              typeof update[key] !== 'string' ||
-              update[key].length > 5000
-            ) {
-              return res.status(400).json({
-                error: `Invalid profile field: ${key}`
-              });
-            }
+        let newFullName = account.full_name;
 
-            profile[key] = update[key].trim();
+        if (update.fullName !== undefined) {
+          if (
+            typeof update.fullName !== 'string' ||
+            update.fullName.trim().length < 2 ||
+            update.fullName.trim().length > 120
+          ) {
+            return res.status(400).json({
+              error: 'Name must be between 2 and 120 characters.'
+            });
           }
+
+          newFullName = update.fullName.trim();
         }
 
-        await sql`
+        for (const key of allowed) {
+          if (key === 'fullName' || update[key] === undefined) {
+            continue;
+          }
+
+          if (
+            typeof update[key] !== 'string' ||
+            update[key].length > 5000
+          ) {
+            return res.status(400).json({
+              error: `Invalid profile field: ${key}`
+            });
+          }
+
+          const value = update[key].trim();
+
+          if (
+            key === 'facebookLink' &&
+            value &&
+            !/^https:\/\/(www\.)?facebook\.com\/[^\s]+$/i.test(value)
+          ) {
+            return res.status(400).json({
+              error: 'Please provide a valid Facebook profile URL.'
+            });
+          }
+
+          if (
+            key === 'avatarUrl' &&
+            value &&
+            !/^https:\/\/[^\s]+$/i.test(value)
+          ) {
+            return res.status(400).json({
+              error: 'Profile picture URL must use HTTPS.'
+            });
+          }
+
+          profile[key] = value;
+        }
+
+        // Preserve the Admin-controlled rank.
+        profile.rank =
+          (OFFICIAL_RANKS as readonly string[]).includes(profile.rank)
+            ? profile.rank
+            : 'D';
+
+        const updated = await sql`
           UPDATE blackbird_member_accounts
-          SET profile = ${JSON.stringify(profile)}::jsonb,
-              updated_at = NOW()
+          SET
+            full_name = ${newFullName},
+            profile = ${JSON.stringify(profile)}::jsonb,
+            updated_at = NOW()
           WHERE id = ${account.id}
+          RETURNING id
         `;
+
+        if (!updated.length) {
+          return res.status(404).json({
+            error: 'Member account not found.'
+          });
+        }
+
+        const db = readDatabase();
+
+        const rosterIndex = db.members.findIndex(
+          (member) => member.sourceMemberAccountId === account.id
+        );
+
+        if (rosterIndex >= 0) {
+          db.members[rosterIndex] = {
+            ...db.members[rosterIndex],
+            name: newFullName,
+            avatarUrl: profile.avatarUrl || '',
+            bio: profile.bio || '',
+            hobbies: profile.hobbies || '',
+            facebookLink: profile.facebookLink || ''
+          };
+
+          saveDatabase(db);
+        }
 
         return res.json({
           success: true,
           message: 'Profile updated successfully.',
-          profile
+          profile,
+          fullName: newFullName
         });
 
       } catch (error) {
@@ -1029,6 +1104,70 @@ export async function createServer() {
     }
   );
 
+  /* =========================================
+     MEMBER ROSTER SYNC
+  ========================================= */
+
+  function syncMemberAccountToRoster(
+    account: any,
+    activate: boolean
+  ): Member {
+    const db = readDatabase();
+
+    const profile = account.profile || {};
+
+    const validRank = (
+      OFFICIAL_RANKS as readonly string[]
+    ).includes(profile.rank)
+      ? profile.rank as Rank
+      : 'D';
+
+    const existingIndex = db.members.findIndex(
+      (member) =>
+        member.sourceMemberAccountId === account.id
+    );
+
+    if (existingIndex >= 0) {
+      const existing = db.members[existingIndex];
+
+      const updated: Member = {
+        ...existing,
+        name: account.full_name,
+        rank: validRank,
+        avatarUrl: profile.avatarUrl || '',
+        bio: profile.bio || '',
+        hobbies: profile.hobbies || '',
+        facebookLink: profile.facebookLink || '',
+        isActive: activate
+      };
+
+      db.members[existingIndex] = updated;
+
+      saveDatabase(db);
+
+      return updated;
+    }
+
+    const member: Member = {
+      id: 'bbs-mem-' + crypto.randomUUID(),
+      sourceMemberAccountId: account.id,
+      name: account.full_name,
+      rank: validRank,
+      avatarUrl: profile.avatarUrl || '',
+      bio: profile.bio || '',
+      hobbies: profile.hobbies || '',
+      facebookLink: profile.facebookLink || '',
+      joiningDate: new Date().toISOString().slice(0, 10),
+      isActive: activate,
+      displayOrder: getNextDisplayOrder(db.members)
+    };
+
+    db.members.push(member);
+
+    saveDatabase(db);
+
+    return member;
+  }
 
   /* =========================================
      ADMIN: MEMBER ACCOUNT LIST
@@ -1071,7 +1210,6 @@ export async function createServer() {
       }
     }
   );
-
 
   /* =========================================
      ADMIN: UPDATE MEMBER ACCOUNT STATUS
@@ -1117,22 +1255,17 @@ export async function createServer() {
           UPDATE blackbird_member_accounts
           SET
             status = ${status},
-
             rejection_reason = ${
               status === 'rejected' || status === 'suspended'
                 ? (reason || '').trim()
                 : ''
             },
-
             approved_at = CASE
               WHEN ${status} = 'approved' THEN NOW()
               ELSE NULL
             END,
-
             updated_at = NOW()
-
           WHERE id = ${accountId}::uuid
-
           RETURNING
             id,
             full_name,
@@ -1151,25 +1284,28 @@ export async function createServer() {
           });
         }
 
-        // Revoke existing member sessions when rejected or suspended.
-        if (status !== 'approved') {
+        const account = updated[0];
+
+        if (status === 'approved') {
+          syncMemberAccountToRoster(account, true);
+        } else {
           await sql`
             DELETE FROM blackbird_member_sessions
             WHERE account_id = ${accountId}::uuid
           `;
+
+          syncMemberAccountToRoster(account, false);
         }
 
         return res.json({
           success: true,
-
           message:
             status === 'approved'
-              ? 'Member account approved successfully.'
+              ? 'Member account approved and synced to public roster.'
               : status === 'rejected'
                 ? 'Member registration rejected.'
-                : 'Member account suspended successfully.',
-
-          account: updated[0]
+                : 'Member account suspended.',
+          account
         });
 
       } catch (error) {
@@ -1180,6 +1316,226 @@ export async function createServer() {
 
         return res.status(500).json({
           error: 'Could not update member account status.'
+        });
+      }
+    }
+  );
+
+  /* =========================================
+     ADMIN: UPDATE MEMBER ACCOUNT PROFILE
+  ========================================= */
+
+  app.patch(
+    '/api/admin/member-accounts/:id/profile',
+    requireAdminAuth,
+    async (req, res) => {
+      try {
+        const accountId = req.params.id;
+        const update = req.body || {};
+
+        const allowed = [
+          'fullName',
+          'avatarUrl',
+          'bio',
+          'hobbies',
+          'facebookLink'
+        ];
+
+        const currentRows = await sql`
+          SELECT id, full_name, profile, status
+          FROM blackbird_member_accounts
+          WHERE id = ${accountId}::uuid
+          LIMIT 1
+        `;
+
+        if (!currentRows.length) {
+          return res.status(404).json({
+            error: 'Member account not found.'
+          });
+        }
+
+        const current = currentRows[0];
+
+        const profile = {
+          ...(current.profile || {})
+        };
+
+        let fullName = current.full_name;
+
+        if (update.fullName !== undefined) {
+          if (
+            typeof update.fullName !== 'string' ||
+            update.fullName.trim().length < 2 ||
+            update.fullName.trim().length > 120
+          ) {
+            return res.status(400).json({
+              error: 'Invalid member name.'
+            });
+          }
+
+          fullName = update.fullName.trim();
+        }
+
+        for (const key of allowed) {
+          if (key === 'fullName' || update[key] === undefined) {
+            continue;
+          }
+
+          if (
+            typeof update[key] !== 'string' ||
+            update[key].length > 5000
+          ) {
+            return res.status(400).json({
+              error: `Invalid profile field: ${key}`
+            });
+          }
+
+          const value = update[key].trim();
+
+          if (
+            key === 'facebookLink' &&
+            value &&
+            !/^https:\/\/(www\.)?facebook\.com\/[^\s]+$/i.test(value)
+          ) {
+            return res.status(400).json({
+              error: 'Invalid Facebook profile URL.'
+            });
+          }
+
+          if (
+            key === 'avatarUrl' &&
+            value &&
+            !/^https:\/\/[^\s]+$/i.test(value)
+          ) {
+            return res.status(400).json({
+              error: 'Profile picture URL must use HTTPS.'
+            });
+          }
+
+          profile[key] = value;
+        }
+
+        const updated = await sql`
+          UPDATE blackbird_member_accounts
+          SET
+            full_name = ${fullName},
+            profile = ${JSON.stringify(profile)}::jsonb,
+            updated_at = NOW()
+          WHERE id = ${accountId}::uuid
+          RETURNING
+            id,
+            full_name,
+            email,
+            status,
+            profile,
+            rejection_reason,
+            created_at,
+            updated_at,
+            approved_at
+        `;
+
+        const account = updated[0];
+
+        if (account.status === 'approved') {
+          syncMemberAccountToRoster(account, true);
+        }
+
+        return res.json({
+          success: true,
+          message: 'Member profile updated successfully.',
+          account
+        });
+
+      } catch (error) {
+        console.error(
+          '[BlackBird] Admin profile update error:',
+          error
+        );
+
+        return res.status(500).json({
+          error: 'Could not update member profile.'
+        });
+      }
+    }
+  );
+
+  /* =========================================
+     ADMIN: UPDATE MEMBER ACCOUNT RANK
+  ========================================= */
+
+  app.patch(
+    '/api/admin/member-accounts/:id/rank',
+    requireAdminAuth,
+    async (req, res) => {
+      try {
+        const { rank } = req.body || {};
+        const accountId = req.params.id;
+
+        if (
+          typeof rank !== 'string' ||
+          !(OFFICIAL_RANKS as readonly string[]).includes(rank)
+        ) {
+          return res.status(400).json({
+            error: 'Rank must be one of the official ranks.'
+          });
+        }
+
+        const currentRows = await sql`
+          SELECT id, profile, status
+          FROM blackbird_member_accounts
+          WHERE id = ${accountId}::uuid
+          LIMIT 1
+        `;
+
+        if (!currentRows.length) {
+          return res.status(404).json({
+            error: 'Member account not found.'
+          });
+        }
+
+        const profile = {
+          ...(currentRows[0].profile || {}),
+          rank
+        };
+
+        const updated = await sql`
+          UPDATE blackbird_member_accounts
+          SET
+            profile = ${JSON.stringify(profile)}::jsonb,
+            updated_at = NOW()
+          WHERE id = ${accountId}::uuid
+          RETURNING
+            id,
+            full_name,
+            email,
+            status,
+            profile,
+            rejection_reason,
+            created_at,
+            updated_at,
+            approved_at
+        `;
+
+        const account = updated[0];
+
+        if (account.status === 'approved') {
+          syncMemberAccountToRoster(account, true);
+        }
+
+        return res.json({
+          success: true,
+          message: `Member rank updated to ${rank}.`,
+          account
+        });
+
+      } catch (error) {
+        console.error(
+          '[BlackBird] Rank update error:',
+          error
+        );
+
+        return res.status(500).json({
+          error: 'Could not update member rank.'
         });
       }
     }
@@ -1199,10 +1555,7 @@ export async function createServer() {
         const deleted = await sql`
           DELETE FROM blackbird_member_accounts
           WHERE id = ${accountId}::uuid
-          RETURNING
-            id,
-            full_name,
-            email
+          RETURNING id, full_name, email
         `;
 
         if (!deleted.length) {
@@ -1211,6 +1564,8 @@ export async function createServer() {
           });
         }
 
+        // Session rows are deleted automatically through ON DELETE CASCADE.
+        // The public roster record is intentionally preserved.
         return res.json({
           success: true,
           message: 'Member account deleted.',
@@ -1230,1230 +1585,1038 @@ export async function createServer() {
     }
   );
 
-  
-  /* =========================================
-     PUBLIC WEBSITE DATA
-  ========================================= */
 
-  app.get('/api/public-data', (_req, res) => {
+
+  // ============================================
+  // PART 3/3 — EXISTING API + ADMIN + SERVER
+  // ============================================
+
+  // Public website data
+  app.get('/api/public-data', (_req: Request, res: Response) => {
+    try {
+      const db = readDatabase();
+
+      const members = sortMembersByOrder(
+        db.members.filter((member) => member.isActive)
+      ).map((member) => {
+        const {
+          sourceApplicationId: _sourceApplicationId,
+          sourceMemberAccountId: _sourceMemberAccountId,
+          ...publicMember
+        } = member;
+
+        return publicMember;
+      });
+
+      res.json({
+        members,
+        projects: [...db.projects]
+          .filter((project) => project.isPublished)
+          .sort((a, b) => a.displayOrder - b.displayOrder),
+        socialLinks: [...db.socialLinks]
+          .filter((link) => link.isVisible)
+          .sort((a, b) => a.displayOrder - b.displayOrder),
+        settings: db.settings,
+        customization: db.customization,
+      });
+    } catch (error) {
+      console.error('Public data error:', error);
+      res.status(500).json({ error: 'Failed to load public data.' });
+    }
+  });
+
+  // Application tracking
+  app.get('/api/applications/track/:id', (req: Request, res: Response) => {
     const db = readDatabase();
+    const application = db.applications.find(
+      (item) => item.id === req.params.id
+    );
+
+    if (!application) {
+      return res.status(404).json({
+        error: 'Application not found.',
+      });
+    }
+
+    const messages: Record<string, string> = {
+      pending: 'Your application is currently under review.',
+      approved: 'Congratulations! Your application has been approved.',
+      rejected: 'Your application was not approved.',
+    };
 
     res.json({
-      members: sortMembersByOrder(
-        db.members.filter((m) => m.isActive)
-      ).map(({ sourceApplicationId: _source, ...member }) => member),
-
-      projects: [...db.projects]
-        .filter((p) => p.isPublished)
-        .sort((a, b) => a.displayOrder - b.displayOrder),
-
-      socialLinks: [...db.socialLinks]
-        .filter((s) => s.isVisible)
-        .sort((a, b) => a.displayOrder - b.displayOrder),
-
-      settings: db.settings,
-      customization: db.customization
+      id: application.id,
+      status: application.status,
+      message: messages[application.status] || 'Application status updated.',
     });
   });
 
-  /* =========================================
-     APPLICATION TRACKING
-  ========================================= */
-
-  app.get(
-    '/api/applications/track/:id',
-    rateLimit('track', 20, 15 * 60 * 1000),
-    (req, res) => {
-      res.setHeader('Cache-Control', 'no-store');
-
-      const item = readDatabase().applications.find(
-        (a) =>
-          a.id.toLowerCase() ===
-          req.params.id.trim().toLowerCase()
-      );
-
-      if (!item) {
-        return res.status(404).json({
-          error: 'No application found with this ID.'
-        });
-      }
-
-      res.json({
-        id: item.id,
-        fullName: item.fullName,
-        desiredRank: item.desiredRank,
-        status: item.status,
-        submittedAt: item.submittedAt,
-
-        statusMessage:
-          item.status === 'approved'
-            ? 'Congratulations! Your application has been approved. You are now an official voice member of BlackBird Studio!'
-            : item.status === 'rejected'
-              ? 'Thank you for your interest. At this time, we are unable to accept your application. You are welcome to re-apply in the next season.'
-              : 'Your application is currently under review by BlackBird Studio administration. We appreciate your patience!'
-      });
-    }
-  );
-
-  /* =========================================
-     SUBMIT APPLICATION
-  ========================================= */
-
-  app.post(
-    '/api/applications',
-    rateLimit('application-submit', 5, 60 * 60 * 1000),
-    (req, res) => {
+  // Submit application
+  app.post('/api/applications', async (req: Request, res: Response) => {
+    try {
       const validation = validateApplication(req.body);
 
-      if (!validation.isValid) {
+      if (!validation.valid) {
         return res.status(400).json({
-          error: 'Validation failed',
-          errors: validation.errors
+          error: validation.error || 'Invalid application data.',
         });
       }
 
       const db = readDatabase();
+      const data = req.body;
 
-      let id = generateApplicationId();
-
-      while (db.applications.some((a) => a.id === id)) {
-        id = generateApplicationId();
-      }
-
-      const item: Application = {
-        id,
-        fullName: req.body.fullName.trim(),
-        avatarUrl: req.body.avatarUrl.trim(),
-        desiredRank: req.body.desiredRank as Rank,
-        hobbies: req.body.hobbies.trim(),
-        bio: req.body.bio.trim(),
-        motivation: req.body.motivation.trim(),
-        dubbingExperience:
-          req.body.dubbingExperience?.trim() || '',
-        contactInfo: req.body.contactInfo.trim(),
-        additionalInfo:
-          req.body.additionalInfo?.trim() || '',
-        isConfirmed: Boolean(req.body.isConfirmed),
+      const application: Application = {
+        ...data,
+        id: generateApplicationId(),
         status: 'pending',
         submittedAt: new Date().toISOString(),
-        adminNotes: ''
       };
 
-      db.applications.unshift(item);
-
-      saveDatabase(db);
+      db.applications.push(application);
+      await saveDatabase(db);
 
       res.status(201).json({
         success: true,
-        applicationId: id,
-        message:
-          'Your application has been received successfully and is set to Pending status.'
+        applicationId: application.id,
+        message: 'Application submitted successfully.',
       });
+    } catch (error) {
+      console.error('Application submission error:', error);
+      res.status(500).json({
+        error: 'Failed to submit application.',
+      });
+    }
+  });
+
+  // Supabase media upload
+  app.post(
+    '/api/upload',
+    uploadRateLimit,
+    upload.single('file'),
+    async (req: Request, res: Response) => {
+      try {
+        if (!req.file) {
+          return res.status(400).json({
+            error: 'No file was provided.',
+          });
+        }
+
+        const file = req.file;
+
+        if (file.size > 100 * 1024 * 1024) {
+          return res.status(413).json({
+            error: 'File size exceeds the 100MB limit.',
+          });
+        }
+
+        const detectedMime = validateMediaSignature(
+          file.buffer,
+          file.mimetype
+        );
+
+        if (!detectedMime) {
+          return res.status(400).json({
+            error: 'Unsupported or invalid media file.',
+          });
+        }
+
+        if (!supabase) {
+          return res.status(503).json({
+            error: 'Media storage is not configured.',
+          });
+        }
+
+        const safeName = file.originalname
+          .replace(/[^a-zA-Z0-9._-]/g, '_')
+          .slice(-100);
+
+        const filePath = `uploads/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+
+        const { error } = await supabase.storage
+          .from(SUPABASE_BUCKET)
+          .upload(filePath, file.buffer, {
+            contentType: detectedMime,
+            upsert: false,
+          });
+
+        if (error) {
+          console.error('Supabase upload error:', error);
+          return res.status(500).json({
+            error: 'Failed to upload file.',
+          });
+        }
+
+        const { data } = supabase.storage
+          .from(SUPABASE_BUCKET)
+          .getPublicUrl(filePath);
+
+        res.status(201).json({
+          success: true,
+          url: data.publicUrl,
+          path: filePath,
+          mimeType: detectedMime,
+        });
+      } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({
+          error: 'Upload failed.',
+        });
+      }
     }
   );
 
-  /* =========================================
-     SUPABASE STORAGE UPLOAD
-  ========================================= */
-
-  
-app.post(
-  '/api/upload',
-  rateLimit('upload', 15, 60 * 60 * 1000),
-  upload.single('file'),
-  async (req, res) => {
+  // Admin login
+  app.post('/api/auth/login', async (req: Request, res: Response) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({
-          error: 'No file uploaded.'
-        });
-      }
-
-      const ext = path
-        .extname(req.file.originalname)
-        .toLowerCase();
-
-      if (!hasValidMediaSignature(req.file.buffer, ext)) {
-        return res.status(400).json({
-          error: 'Invalid image or video file format.'
-        });
-      }
-
-      const safeBase = path
-        .basename(req.file.originalname, ext)
-        .replace(/[^a-zA-Z0-9_-]/g, '_')
-        .slice(0, 80) || 'media';
-
-      const filename =
-        `${safeBase}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
-
-      const storagePath =
-        `${new Date().toISOString().slice(0, 10)}/${filename}`;
-
-      const { data: uploadData, error: uploadError } =
-        await supabase.storage
-          .from(BUCKET)
-          .upload(storagePath, req.file.buffer, {
-            contentType: req.file.mimetype,
-            upsert: false,
-            cacheControl: '31536000'
-          });
-
-      if (uploadError) {
-        console.error('[BlackBird] Supabase upload error:', {
-          message: uploadError.message,
-          name: uploadError.name
-        });
-
-        return res.status(502).json({
-          error: 'Supabase upload failed.',
-          details: uploadError.message
-        });
-      }
-
-      const { data: publicData } = supabase.storage
-        .from(BUCKET)
-        .getPublicUrl(uploadData.path);
-
-      if (!publicData?.publicUrl) {
-        return res.status(502).json({
-          error: 'Upload completed, but public URL could not be generated.'
-        });
-      }
-
-      return res.json({
-        success: true,
-        url: publicData.publicUrl,
-        filename,
-        size: req.file.size,
-        mimetype: req.file.mimetype
-      });
-
-    } catch (error) {
-      console.error('[BlackBird] Upload route exception:', error);
-
-      return res.status(500).json({
-        error: 'Unexpected upload error.'
-      });
-    }
-  }
-);
-
-  /* =========================================
-     ADMIN LOGIN
-  ========================================= */
-
-  app.post(
-    '/api/auth/login',
-    rateLimit('admin-login', 5, 15 * 60 * 1000),
-    (req, res) => {
-      const { email, password } = req.body || {};
+      const { username, password } = req.body || {};
 
       if (
-        typeof email !== 'string' ||
+        typeof username !== 'string' ||
         typeof password !== 'string' ||
-        !email.trim() ||
+        !username.trim() ||
         !password
       ) {
         return res.status(400).json({
-          error: 'Email and password are required.'
+          error: 'Username and password are required.',
         });
       }
 
       const db = readDatabase();
 
-      if (
-        db.adminUser.email.toLowerCase() !==
-          email.trim().toLowerCase() ||
-        !bcrypt.compareSync(
-          password,
-          db.adminUser.passwordHash
-        )
-      ) {
+      if (username.trim() !== db.adminUser.username) {
         return res.status(401).json({
-          error: 'Invalid admin credentials.'
+          error: 'Invalid username or password.',
         });
       }
 
-      const token = generateToken();
-
-      activeSessions.set(
-        token,
-        Date.now() + SESSION_TTL_MS
+      const passwordMatches = await bcrypt.compare(
+        password,
+        db.adminUser.passwordHash
       );
+
+      if (!passwordMatches) {
+        return res.status(401).json({
+          error: 'Invalid username or password.',
+        });
+      }
+
+      const token = crypto.randomBytes(48).toString('hex');
+
+      activeSessions.set(token, {
+        username: db.adminUser.username,
+        expiresAt: Date.now() + SESSION_TTL,
+      });
 
       res.json({
         success: true,
         token,
-        user: {
-          email: db.adminUser.email,
-          role: db.adminUser.role
-        }
+        expiresIn: SESSION_TTL,
+      });
+    } catch (error) {
+      console.error('Admin login error:', error);
+      res.status(500).json({
+        error: 'Login failed.',
       });
     }
-  );
+  });
 
-  /* =========================================
-     LOGOUT AND SESSION
-  ========================================= */
+  // Admin logout
+  app.post('/api/auth/logout', requireAdminAuth, (req: Request, res: Response) => {
+    const token = getBearerToken(req);
 
-  app.post('/api/auth/logout', (req, res) => {
-    const header = req.headers.authorization;
-
-    if (header?.startsWith('Bearer ')) {
-      activeSessions.delete(header.slice(7));
+    if (token) {
+      activeSessions.delete(token);
     }
 
     res.json({ success: true });
   });
 
-  app.get('/api/auth/session', (req, res) => {
-    const header = req.headers.authorization;
-
-    if (!header?.startsWith('Bearer ')) {
-      return res.json({ authenticated: false });
-    }
-
-    const token = header.slice(7);
-
-    const expires = activeSessions.get(token);
-
-    if (!expires || expires <= Date.now()) {
-      activeSessions.delete(token);
-
-      return res.json({ authenticated: false });
-    }
-
-    const db = readDatabase();
+  // Admin session validation
+  app.get('/api/auth/session', requireAdminAuth, (req: Request, res: Response) => {
+    const token = getBearerToken(req);
+    const session = token ? activeSessions.get(token) : undefined;
 
     res.json({
       authenticated: true,
-      user: {
-        email: db.adminUser.email,
-        role: db.adminUser.role
-      }
+      username: session?.username || '',
     });
   });
 
-  /* =========================================
-     CHANGE ADMIN PASSWORD
-  ========================================= */
-
+  // Change admin password
   app.post(
     '/api/auth/change-password',
     requireAdminAuth,
-    (req, res) => {
-      const { currentPassword, newPassword } =
-        req.body || {};
+    async (req: Request, res: Response) => {
+      try {
+        const { currentPassword, newPassword } = req.body || {};
+        const db = readDatabase();
 
-      if (
-        typeof currentPassword !== 'string' ||
-        typeof newPassword !== 'string' ||
-        newPassword.length < 12
-      ) {
-        return res.status(400).json({
-          error:
-            'Current password is required and the new password must be at least 12 characters long.'
-        });
-      }
+        if (
+          typeof currentPassword !== 'string' ||
+          typeof newPassword !== 'string'
+        ) {
+          return res.status(400).json({
+            error: 'Current and new passwords are required.',
+          });
+        }
 
-      const db = readDatabase();
+        if (newPassword.length < 12) {
+          return res.status(400).json({
+            error: 'New password must contain at least 12 characters.',
+          });
+        }
 
-      if (
-        !bcrypt.compareSync(
+        const valid = await bcrypt.compare(
           currentPassword,
           db.adminUser.passwordHash
-        )
-      ) {
-        return res.status(400).json({
-          error: 'Incorrect current password.'
+        );
+
+        if (!valid) {
+          return res.status(401).json({
+            error: 'Current password is incorrect.',
+          });
+        }
+
+        db.adminUser.passwordHash = await bcrypt.hash(newPassword, 12);
+        await saveDatabase(db);
+
+        // Invalidate existing admin sessions
+        activeSessions.clear();
+
+        res.json({
+          success: true,
+          message: 'Password changed. Please log in again.',
+        });
+      } catch (error) {
+        console.error('Password change error:', error);
+        res.status(500).json({
+          error: 'Failed to change password.',
         });
       }
-
-      db.adminUser.passwordHash =
-        bcrypt.hashSync(newPassword, 12);
-
-      saveDatabase(db);
-
-      activeSessions.clear();
-
-      res.json({
-        success: true,
-        message:
-          'Admin password updated successfully. Please log in again.'
-      });
     }
   );
 
-  /* =========================================
-     ADMIN ALL DATA
-  ========================================= */
+  // All admin data
+  app.get('/api/admin/all-data', requireAdminAuth, (_req: Request, res: Response) => {
+    const db = readDatabase();
 
-  app.get(
-    '/api/admin/all-data',
-    requireAdminAuth,
-    (_req, res) => {
-      const db = readDatabase();
+    res.json({
+      members: sortMembersByOrder(db.members),
+      applications: db.applications,
+      projects: db.projects,
+      socialLinks: db.socialLinks,
+      settings: db.settings,
+      customization: db.customization,
+      supabaseConfig: db.supabaseConfig,
+      stats: {
+        totalMembers: db.members.length,
+        activeMembers: db.members.filter((member) => member.isActive).length,
+        totalApplications: db.applications.length,
+        pendingApplications: db.applications.filter(
+          (application) => application.status === 'pending'
+        ).length,
+        totalProjects: db.projects.length,
+        publishedProjects: db.projects.filter(
+          (project) => project.isPublished
+        ).length,
+      },
+    });
+  });
 
-      res.json({
-        members: sortMembersByOrder(db.members),
-
-        applications: db.applications,
-
-        projects: [...db.projects].sort(
-          (a, b) => a.displayOrder - b.displayOrder
-        ),
-
-        socialLinks: [...db.socialLinks].sort(
-          (a, b) => a.displayOrder - b.displayOrder
-        ),
-
-        settings: db.settings,
-
-        customization: db.customization,
-
-        supabaseConfig:
-          db.supabaseConfig || {
-            supabaseUrl: '',
-            supabaseAnonKey: '',
-            isEnabled: false
-          },
-
-        stats: {
-          totalMembers: db.members.length,
-
-          activeMembers:
-            db.members.filter((m) => m.isActive).length,
-
-          pendingApplications:
-            db.applications.filter(
-              (a) => a.status === 'pending'
-            ).length,
-
-          approvedApplications:
-            db.applications.filter(
-              (a) => a.status === 'approved'
-            ).length,
-
-          rejectedApplications:
-            db.applications.filter(
-              (a) => a.status === 'rejected'
-            ).length,
-
-          totalProjects: db.projects.length,
-
-          publishedProjects:
-            db.projects.filter((p) => p.isPublished).length
-        }
-      });
-    }
-  );
-
-  /* =========================================
-     ADD MEMBER
-  ========================================= */
-
+  // Create roster member
   app.post(
     '/api/admin/members',
     requireAdminAuth,
-    (req, res) => {
-      const {
-        name,
-        rank,
-        avatarUrl,
-        hobbies,
-        bio,
-        joiningDate,
-        isActive
-      } = req.body;
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const {
+          name,
+          rank,
+          avatarUrl,
+          hobbies,
+          bio,
+          joiningDate,
+          isActive,
+        } = req.body || {};
 
-      if (
-        !name ||
-        !rank ||
-        !(OFFICIAL_RANKS as readonly string[]).includes(rank)
-      ) {
-        return res.status(400).json({
-          error: 'Valid Name and official Rank are required.'
+        if (
+          typeof name !== 'string' ||
+          !name.trim() ||
+          !OFFICIAL_RANKS.includes(rank)
+        ) {
+          return res.status(400).json({
+            error: 'A valid member name and rank are required.',
+          });
+        }
+
+        const member: Member = {
+          id: crypto.randomUUID(),
+          name: name.trim().slice(0, 120),
+          rank,
+          avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : '',
+          hobbies: typeof hobbies === 'string' ? hobbies : '',
+          bio: typeof bio === 'string' ? bio : '',
+          joiningDate:
+            typeof joiningDate === 'string'
+              ? joiningDate
+              : new Date().toISOString().slice(0, 10),
+          isActive: typeof isActive === 'boolean' ? isActive : true,
+          displayOrder: getNextDisplayOrder(db.members),
+        };
+
+        db.members.push(member);
+        await saveDatabase(db);
+
+        res.status(201).json({
+          success: true,
+          member,
+        });
+      } catch (error) {
+        console.error('Create member error:', error);
+        res.status(500).json({
+          error: 'Failed to create member.',
         });
       }
-
-      const db = readDatabase();
-
-      const member: Member = {
-        id: 'bbs-mem-' + Date.now(),
-        name: name.trim(),
-        rank: rank as Rank,
-        avatarUrl: avatarUrl?.trim() || '',
-        hobbies: hobbies?.trim() || '',
-        bio: bio?.trim() || '',
-        joiningDate:
-          joiningDate || new Date().toISOString().slice(0, 10),
-        isActive:
-          isActive !== undefined ? Boolean(isActive) : true,
-        displayOrder: getNextDisplayOrder(db.members)
-      };
-
-      db.members.push(member);
-
-      saveDatabase(db);
-
-      res.status(201).json({
-        success: true,
-        member
-      });
     }
   );
 
-  /* =========================================
-     REORDER MEMBERS
-  ========================================= */
-
+  // Reorder roster members
   app.put(
     '/api/admin/members/reorder',
     requireAdminAuth,
-    (req, res) => {
-      const { orderedIds } = req.body;
+    async (req: Request, res: Response) => {
+      try {
+        const { memberIds } = req.body || {};
 
-      if (!Array.isArray(orderedIds)) {
-        return res.status(400).json({
-          error: 'orderedIds array is required.'
+        if (
+          !Array.isArray(memberIds) ||
+          !memberIds.every((id) => typeof id === 'string')
+        ) {
+          return res.status(400).json({
+            error: 'A valid memberIds array is required.',
+          });
+        }
+
+        const db = readDatabase();
+        db.members = reindexMembers(db.members, memberIds);
+
+        await saveDatabase(db);
+
+        res.json({
+          success: true,
+          members: sortMembersByOrder(db.members),
+        });
+      } catch (error) {
+        console.error('Member reorder error:', error);
+        res.status(500).json({
+          error: 'Failed to reorder members.',
         });
       }
-
-      const db = readDatabase();
-
-      const map = new Map(
-        db.members.map((member) => [member.id, member])
-      );
-
-      const ordered: Member[] = [];
-
-      orderedIds.forEach((id: string) => {
-        const member = map.get(id);
-
-        if (member) {
-          ordered.push({
-            ...member,
-            displayOrder: ordered.length + 1
-          });
-
-          map.delete(id);
-        }
-      });
-
-      map.forEach((member) => {
-        ordered.push({
-          ...member,
-          displayOrder: ordered.length + 1
-        });
-      });
-
-      db.members = ordered;
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        members: sortMembersByOrder(db.members)
-      });
     }
   );
 
-  /* =========================================
-     UPDATE MEMBER
-  ========================================= */
-
+  // Update roster member
   app.put(
     '/api/admin/members/:id',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const member = db.members.find(
+          (item) => item.id === req.params.id
+        );
 
-      const index = db.members.findIndex(
-        (member) => member.id === req.params.id
-      );
+        if (!member) {
+          return res.status(404).json({
+            error: 'Member not found.',
+          });
+        }
 
-      if (index < 0) {
-        return res.status(404).json({
-          error: 'Member not found.'
+        const updates = req.body || {};
+
+        if (updates.name !== undefined) {
+          if (typeof updates.name !== 'string' || !updates.name.trim()) {
+            return res.status(400).json({
+              error: 'Member name cannot be empty.',
+            });
+          }
+          member.name = updates.name.trim().slice(0, 120);
+        }
+
+        if (updates.rank !== undefined) {
+          if (!OFFICIAL_RANKS.includes(updates.rank)) {
+            return res.status(400).json({
+              error: 'Invalid member rank.',
+            });
+          }
+          member.rank = updates.rank;
+        }
+
+        if (updates.avatarUrl !== undefined) {
+          member.avatarUrl = String(updates.avatarUrl).slice(0, 2000);
+        }
+
+        if (updates.hobbies !== undefined) {
+          member.hobbies = String(updates.hobbies).slice(0, 2000);
+        }
+
+        if (updates.bio !== undefined) {
+          member.bio = String(updates.bio).slice(0, 5000);
+        }
+
+        if (updates.facebookLink !== undefined) {
+          member.facebookLink = String(updates.facebookLink).slice(0, 2000);
+        }
+
+        if (updates.joiningDate !== undefined) {
+          member.joiningDate = String(updates.joiningDate).slice(0, 40);
+        }
+
+        if (updates.isActive !== undefined) {
+          member.isActive = Boolean(updates.isActive);
+        }
+
+        await saveDatabase(db);
+
+        res.json({
+          success: true,
+          member,
+        });
+      } catch (error) {
+        console.error('Update member error:', error);
+        res.status(500).json({
+          error: 'Failed to update member.',
         });
       }
-
-      const update = req.body || {};
-
-      if (
-        update.rank !== undefined &&
-        !(OFFICIAL_RANKS as readonly string[]).includes(
-          update.rank
-        )
-      ) {
-        return res.status(400).json({
-          error: 'Rank must be one of the official ranks.'
-        });
-      }
-
-      const allowed = [
-        'name',
-        'rank',
-        'avatarUrl',
-        'hobbies',
-        'bio',
-        'joiningDate',
-        'isActive'
-      ];
-
-      const safe = Object.fromEntries(
-        allowed
-          .filter((key) => update[key] !== undefined)
-          .map((key) => [key, update[key]])
-      );
-
-      if (
-        safe.name !== undefined &&
-        (
-          typeof safe.name !== 'string' ||
-          !safe.name.trim()
-        )
-      ) {
-        return res.status(400).json({
-          error: 'Member name is required.'
-        });
-      }
-
-      db.members[index] = {
-        ...db.members[index],
-        ...safe,
-        id: db.members[index].id
-      };
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        member: db.members[index]
-      });
     }
   );
 
-  /* =========================================
-     DELETE MEMBER
-  ========================================= */
-
+  // Delete roster member
   app.delete(
     '/api/admin/members/:id',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const index = db.members.findIndex(
+          (member) => member.id === req.params.id
+        );
 
-      const filtered = db.members.filter(
-        (member) => member.id !== req.params.id
-      );
+        if (index === -1) {
+          return res.status(404).json({
+            error: 'Member not found.',
+          });
+        }
 
-      if (filtered.length === db.members.length) {
-        return res.status(404).json({
-          error: 'Member not found.'
+        db.members.splice(index, 1);
+        await saveDatabase(db);
+
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Delete member error:', error);
+        res.status(500).json({
+          error: 'Failed to delete member.',
         });
       }
-
-      db.members = reindexMembers(filtered);
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        message: 'Member removed permanently.'
-      });
     }
   );
 
-  /* =========================================
-     UPDATE APPLICATION
-  ========================================= */
-
+  // Update application
   app.put(
     '/api/admin/applications/:id',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const application = db.applications.find(
+          (item) => item.id === req.params.id
+        );
 
-      const index = db.applications.findIndex(
-        (application) => application.id === req.params.id
-      );
+        if (!application) {
+          return res.status(404).json({
+            error: 'Application not found.',
+          });
+        }
 
-      if (index < 0) {
-        return res.status(404).json({
-          error: 'Application not found.'
+        Object.assign(application, req.body || {});
+        await saveDatabase(db);
+
+        res.json({
+          success: true,
+          application,
+        });
+      } catch (error) {
+        console.error('Update application error:', error);
+        res.status(500).json({
+          error: 'Failed to update application.',
         });
       }
-
-      const update = req.body || {};
-
-      if (
-        update.status !== undefined &&
-        !['pending', 'approved', 'rejected'].includes(
-          update.status
-        )
-      ) {
-        return res.status(400).json({
-          error: 'Invalid application status.'
-        });
-      }
-
-      const allowed = ['adminNotes', 'status'];
-
-      const safe = Object.fromEntries(
-        allowed
-          .filter((key) => update[key] !== undefined)
-          .map((key) => [key, update[key]])
-      );
-
-      db.applications[index] = {
-        ...db.applications[index],
-        ...safe,
-        id: db.applications[index].id
-      };
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        application: db.applications[index]
-      });
     }
   );
 
-  /* =========================================
-     APPROVE APPLICATION
-  ========================================= */
-
+  // Approve application
   app.post(
     '/api/admin/applications/:id/approve',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const application = db.applications.find(
+          (item) => item.id === req.params.id
+        );
 
-      const index = db.applications.findIndex(
-        (application) => application.id === req.params.id
-      );
+        if (!application) {
+          return res.status(404).json({
+            error: 'Application not found.',
+          });
+        }
 
-      if (index < 0) {
-        return res.status(404).json({
-          error: 'Application not found.'
-        });
-      }
+        if (application.status === 'approved') {
+          return res.json({
+            success: true,
+            message: 'Application is already approved.',
+          });
+        }
 
-      const application = db.applications[index];
+        application.status = 'approved';
 
-      if (application.status === 'approved') {
-        return res.json({
+        const existingMember = db.members.find(
+          (member) => member.sourceApplicationId === application.id
+        );
+
+        if (existingMember) {
+          existingMember.isActive = true;
+        } else {
+          const member: Member = {
+            id: crypto.randomUUID(),
+            name: application.name,
+            rank: 'D',
+            avatarUrl: application.avatarUrl || '',
+            hobbies: application.hobbies || '',
+            bio: application.bio || '',
+            joiningDate: new Date().toISOString().slice(0, 10),
+            isActive: true,
+            displayOrder: getNextDisplayOrder(db.members),
+            sourceApplicationId: application.id,
+          };
+
+          db.members.push(member);
+        }
+
+        await saveDatabase(db);
+
+        res.json({
           success: true,
-          message: 'This application has already been approved.',
-          application,
-          member:
-            db.members.find(
-              (member) =>
-                member.sourceApplicationId === application.id
-            ) || null
+          message: 'Application approved.',
+        });
+      } catch (error) {
+        console.error('Approve application error:', error);
+        res.status(500).json({
+          error: 'Failed to approve application.',
         });
       }
-
-      application.status = 'approved';
-
-      if (req.body?.adminNotes) {
-        application.adminNotes = req.body.adminNotes;
-      }
-
-      const member: Member = {
-        id: 'bbs-mem-' + Date.now(),
-        sourceApplicationId: application.id,
-        name: application.fullName,
-        rank: application.desiredRank,
-        avatarUrl: application.avatarUrl,
-        hobbies: application.hobbies,
-        bio: application.bio,
-        joiningDate: new Date().toISOString().slice(0, 10),
-        isActive: true,
-        displayOrder: getNextDisplayOrder(db.members)
-      };
-
-      db.members.push(member);
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        message:
-          `${application.fullName} has been approved and added to the official member roster!`,
-        application,
-        member
-      });
     }
   );
 
-  /* =========================================
-     REJECT APPLICATION
-  ========================================= */
-
+  // Reject application
   app.post(
     '/api/admin/applications/:id/reject',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const application = db.applications.find(
+          (item) => item.id === req.params.id
+        );
 
-      const index = db.applications.findIndex(
-        (application) => application.id === req.params.id
-      );
+        if (!application) {
+          return res.status(404).json({
+            error: 'Application not found.',
+          });
+        }
 
-      if (index < 0) {
-        return res.status(404).json({
-          error: 'Application not found.'
+        application.status = 'rejected';
+        await saveDatabase(db);
+
+        res.json({
+          success: true,
+          message: 'Application rejected.',
+        });
+      } catch (error) {
+        console.error('Reject application error:', error);
+        res.status(500).json({
+          error: 'Failed to reject application.',
         });
       }
-
-      db.applications[index].status = 'rejected';
-
-      if (req.body?.adminNotes) {
-        db.applications[index].adminNotes =
-          req.body.adminNotes;
-      }
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        application: db.applications[index]
-      });
     }
   );
 
-  /* =========================================
-     ADD PROJECT
-  ========================================= */
-
+  // Create project
   app.post(
     '/api/admin/projects',
     requireAdminAuth,
-    (req, res) => {
-      const body = req.body || {};
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const project = {
+          ...req.body,
+          id: crypto.randomUUID(),
+          displayOrder: getNextDisplayOrder(db.projects),
+        } as Project;
 
-      if (!body.title || !body.animeName) {
-        return res.status(400).json({
-          error: 'Project Title and Anime Name are required.'
+        if (
+          typeof project.title !== 'string' ||
+          !project.title.trim()
+        ) {
+          return res.status(400).json({
+            error: 'Project title is required.',
+          });
+        }
+
+        db.projects.push(project);
+        await saveDatabase(db);
+
+        res.status(201).json({
+          success: true,
+          project,
+        });
+      } catch (error) {
+        console.error('Create project error:', error);
+        res.status(500).json({
+          error: 'Failed to create project.',
         });
       }
-
-      const db = readDatabase();
-
-      const max = db.projects.length
-        ? Math.max(
-            ...db.projects.map(
-              (project) => project.displayOrder || 0
-            )
-          )
-        : 0;
-
-      const project: Project = {
-        id: 'bbs-proj-' + Date.now(),
-        title: body.title.trim(),
-        animeName: body.animeName.trim(),
-        episodeNumber: body.episodeNumber?.trim() || '',
-        description: body.description?.trim() || '',
-        releaseDate:
-          body.releaseDate ||
-          new Date().toISOString().slice(0, 10),
-        category: body.category?.trim() || 'Anime Dub',
-        thumbnailUrl: body.thumbnailUrl?.trim() || '',
-        videoUrl: body.videoUrl?.trim() || '',
-        videoType: body.videoType || 'upload',
-        isFeatured: Boolean(body.isFeatured),
-        isPublished:
-          body.isPublished !== undefined
-            ? Boolean(body.isPublished)
-            : true,
-        displayOrder: max + 1
-      };
-
-      db.projects.push(project);
-
-      saveDatabase(db);
-
-      res.status(201).json({
-        success: true,
-        project
-      });
     }
   );
 
-  /* =========================================
-     REORDER PROJECTS
-  ========================================= */
-
+  // Reorder projects
   app.put(
     '/api/admin/projects/reorder',
     requireAdminAuth,
-    (req, res) => {
-      const { orderedIds } = req.body;
+    async (req: Request, res: Response) => {
+      try {
+        const { projectIds } = req.body || {};
 
-      if (!Array.isArray(orderedIds)) {
-        return res.status(400).json({
-          error: 'orderedIds array required.'
+        if (
+          !Array.isArray(projectIds) ||
+          !projectIds.every((id) => typeof id === 'string')
+        ) {
+          return res.status(400).json({
+            error: 'A valid projectIds array is required.',
+          });
+        }
+
+        const db = readDatabase();
+        db.projects = reindexMembers(db.projects as any, projectIds) as any;
+
+        await saveDatabase(db);
+
+        res.json({
+          success: true,
+          projects: db.projects,
+        });
+      } catch (error) {
+        console.error('Project reorder error:', error);
+        res.status(500).json({
+          error: 'Failed to reorder projects.',
         });
       }
-
-      const db = readDatabase();
-
-      const map = new Map(
-        db.projects.map((project) => [
-          project.id,
-          project
-        ])
-      );
-
-      const ordered: Project[] = [];
-
-      orderedIds.forEach((id: string) => {
-        const project = map.get(id);
-
-        if (project) {
-          ordered.push({
-            ...project,
-            displayOrder: ordered.length + 1
-          });
-
-          map.delete(id);
-        }
-      });
-
-      map.forEach((project) => {
-        ordered.push({
-          ...project,
-          displayOrder: ordered.length + 1
-        });
-      });
-
-      db.projects = ordered;
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        projects: db.projects
-      });
     }
   );
 
-  /* =========================================
-     UPDATE PROJECT
-  ========================================= */
-
+  // Update project
   app.put(
     '/api/admin/projects/:id',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const project = db.projects.find(
+          (item) => item.id === req.params.id
+        );
 
-      const index = db.projects.findIndex(
-        (project) => project.id === req.params.id
-      );
+        if (!project) {
+          return res.status(404).json({
+            error: 'Project not found.',
+          });
+        }
 
-      if (index < 0) {
-        return res.status(404).json({
-          error: 'Project not found.'
+        Object.assign(project, req.body || {});
+        await saveDatabase(db);
+
+        res.json({
+          success: true,
+          project,
+        });
+      } catch (error) {
+        console.error('Update project error:', error);
+        res.status(500).json({
+          error: 'Failed to update project.',
         });
       }
-
-      const update = req.body || {};
-
-      const allowed = [
-        'title',
-        'animeName',
-        'episodeNumber',
-        'description',
-        'releaseDate',
-        'category',
-        'thumbnailUrl',
-        'videoUrl',
-        'videoType',
-        'isFeatured',
-        'isPublished'
-      ];
-
-      const safe = Object.fromEntries(
-        allowed
-          .filter((key) => update[key] !== undefined)
-          .map((key) => [key, update[key]])
-      );
-
-      db.projects[index] = {
-        ...db.projects[index],
-        ...safe,
-        id: db.projects[index].id
-      };
-
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        project: db.projects[index]
-      });
     }
   );
 
-  /* =========================================
-     DELETE PROJECT
-  ========================================= */
-
+  // Delete project
   app.delete(
     '/api/admin/projects/:id',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const index = db.projects.findIndex(
+          (project) => project.id === req.params.id
+        );
 
-      const filtered = db.projects.filter(
-        (project) => project.id !== req.params.id
-      );
+        if (index === -1) {
+          return res.status(404).json({
+            error: 'Project not found.',
+          });
+        }
 
-      if (filtered.length === db.projects.length) {
-        return res.status(404).json({
-          error: 'Project not found.'
+        db.projects.splice(index, 1);
+        await saveDatabase(db);
+
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Delete project error:', error);
+        res.status(500).json({
+          error: 'Failed to delete project.',
         });
       }
-
-      db.projects = filtered.map((project, index) => ({
-        ...project,
-        displayOrder: index + 1
-      }));
-
-      saveDatabase(db);
-
-      res.json({ success: true });
     }
   );
 
-  /* =========================================
-     UPDATE SETTINGS
-  ========================================= */
-
+  // Update studio settings
   app.put(
     '/api/admin/settings',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        db.settings = {
+          ...db.settings,
+          ...(req.body || {}),
+        };
 
-      db.settings = {
-        ...db.settings,
-        ...req.body
-      };
+        await saveDatabase(db);
 
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        settings: db.settings
-      });
+        res.json({
+          success: true,
+          settings: db.settings,
+        });
+      } catch (error) {
+        console.error('Settings update error:', error);
+        res.status(500).json({
+          error: 'Failed to update settings.',
+        });
+      }
     }
   );
 
-  /* =========================================
-     UPDATE CUSTOMIZATION
-  ========================================= */
-
+  // Update website customization
   app.put(
     '/api/admin/customization',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        db.customization = {
+          ...db.customization,
+          ...(req.body || {}),
+        };
 
-      db.customization = {
-        ...db.customization,
-        ...req.body
-      };
+        await saveDatabase(db);
 
-      saveDatabase(db);
-
-      res.json({
-        success: true,
-        customization: db.customization
-      });
+        res.json({
+          success: true,
+          customization: db.customization,
+        });
+      } catch (error) {
+        console.error('Customization update error:', error);
+        res.status(500).json({
+          error: 'Failed to update customization.',
+        });
+      }
     }
   );
 
-  /* =========================================
-     UPDATE SOCIAL LINKS
-  ========================================= */
-
+  // Update social links
   app.put(
     '/api/admin/social-links',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
+        const { socialLinks } = req.body || {};
 
-      if (Array.isArray(req.body?.socialLinks)) {
-        db.socialLinks = req.body.socialLinks;
-        saveDatabase(db);
+        if (!Array.isArray(socialLinks)) {
+          return res.status(400).json({
+            error: 'socialLinks must be an array.',
+          });
+        }
+
+        db.socialLinks = socialLinks;
+        await saveDatabase(db);
+
+        res.json({
+          success: true,
+          socialLinks: db.socialLinks,
+        });
+      } catch (error) {
+        console.error('Social links update error:', error);
+        res.status(500).json({
+          error: 'Failed to update social links.',
+        });
       }
-
-      res.json({
-        success: true,
-        socialLinks: db.socialLinks
-      });
     }
   );
 
-  /* =========================================
-     UPDATE SUPABASE CONFIG
-  ========================================= */
-
+  // Update Supabase configuration
   app.put(
     '/api/admin/supabase-config',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
 
-      db.supabaseConfig = req.body;
+        db.supabaseConfig = {
+          ...db.supabaseConfig,
+          ...(req.body || {}),
+        };
 
-      saveDatabase(db);
+        await saveDatabase(db);
 
-      res.json({
-        success: true,
-        supabaseConfig: db.supabaseConfig
-      });
+        res.json({
+          success: true,
+          supabaseConfig: db.supabaseConfig,
+        });
+      } catch (error) {
+        console.error('Supabase config update error:', error);
+        res.status(500).json({
+          error: 'Failed to update Supabase configuration.',
+        });
+      }
     }
   );
 
-  /* =========================================
-     RESET WEBSITE DEFAULTS
-  ========================================= */
-
+  // Reset website defaults
+  // This is an existing admin-only action. It should only run when
+  // an administrator explicitly requests it from the website.
   app.post(
     '/api/admin/reset-defaults',
     requireAdminAuth,
-    (req, res) => {
-      const db = readDatabase();
+    async (_req: Request, res: Response) => {
+      try {
+        const db = readDatabase();
 
-      const reset: DatabaseSchema = {
-        adminUser: db.adminUser,
-        members: DEFAULT_MEMBERS,
-        applications: DEFAULT_APPLICATIONS,
-        projects: DEFAULT_PROJECTS,
-        socialLinks: DEFAULT_SOCIAL_LINKS,
-        settings: DEFAULT_SETTINGS,
-        customization: DEFAULT_CUSTOMIZATION
-      };
+        db.members = [...DEFAULT_MEMBERS];
+        db.applications = [...DEFAULT_APPLICATIONS];
+        db.projects = [...DEFAULT_PROJECTS];
+        db.socialLinks = [...DEFAULT_SOCIAL_LINKS];
+        db.settings = { ...DEFAULT_SETTINGS };
+        db.customization = { ...DEFAULT_CUSTOMIZATION };
 
-      saveDatabase(reset);
+        await saveDatabase(db);
 
-      res.json({
-        success: true,
-        message: 'Website and studio data reset to defaults.'
-      });
+        res.json({
+          success: true,
+          message: 'Website defaults restored.',
+        });
+      } catch (error) {
+        console.error('Reset defaults error:', error);
+        res.status(500).json({
+          error: 'Failed to reset website defaults.',
+        });
+      }
     }
   );
 
-  /* =========================================
-     ERROR HANDLER
-  ========================================= */
-
+  // Error handler
   app.use(
     (
-      err: any,
+      error: any,
       _req: Request,
       res: Response,
       _next: NextFunction
     ) => {
-      if (err instanceof multer.MulterError) {
-        const status =
-          err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+      console.error('Request error:', error);
+
+      if (error instanceof multer.MulterError) {
+        const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
 
         return res.status(status).json({
           error:
-            status === 413
-              ? 'File is too large. Maximum upload size is 100MB.'
-              : 'Upload could not be processed.'
+            error.code === 'LIMIT_FILE_SIZE'
+              ? 'File size exceeds the allowed limit.'
+              : error.message,
         });
       }
 
-      console.error(
-        '[BlackBird] Request error:',
-        err?.message || err
-      );
-
-      return res
-        .status(err?.type === 'entity.too.large' ? 413 : 400)
-        .json({
-          error:
-            err?.type === 'entity.too.large'
-              ? 'Request payload is too large.'
-              : 'Request could not be processed.'
+      if (error?.type === 'entity.too.large') {
+        return res.status(413).json({
+          error: 'Request body is too large.',
         });
+      }
+
+      res.status(500).json({
+        error: 'Internal server error.',
+      });
     }
   );
 
-  /* =========================================
-     FRONTEND
-  ========================================= */
-
-  const production =
-    process.env.NODE_ENV === 'production';
+  // Frontend serving
+  const production = process.env.NODE_ENV === 'production';
 
   if (!production) {
-    const {
-      createServer: createViteServer
-    } = await import('vite');
+    const { createServer: createViteServer } = await import('vite');
 
     const vite = await createViteServer({
       server: {
-        middlewareMode: true
+        middlewareMode: true,
       },
-      appType: 'spa'
+      appType: 'spa',
     });
 
     app.use(vite.middlewares);
   } else {
-    const dist = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(process.cwd(), 'dist');
 
-    app.use(express.static(dist));
+    app.use(express.static(distPath));
 
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(dist, 'index.html'));
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  /* =========================================
-     START SERVER
-  ========================================= */
+  const PORT = Number(process.env.PORT) || 4000;
 
-  const server = app.listen(
-    PORT,
-    '0.0.0.0',
-    () => {
-      console.log(
-        `[BlackBird Studio] Running on port ${PORT}`
-      );
-    }
-  );
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`BlackBird Studio API running on port ${PORT}`);
+  });
 
   const shutdown = async () => {
-    server.close();
+    console.log('Shutting down BlackBird Studio server...');
 
-    await flushWrites();
+    server.close(async () => {
+      try {
+        await flushWrites();
+      } catch (error) {
+        console.error('Final database flush failed:', error);
+      }
 
-    process.exit(0);
+      process.exit(0);
+    });
   };
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 }
 
-/* =========================================
-   START APPLICATION
-========================================= */
-
+// Start server
 createServer().catch((error) => {
-  console.error(
-    '[BlackBird] Startup failed:',
-    error
-  );
-
+  console.error('Failed to start BlackBird Studio server:', error);
   process.exit(1);
 });
+
